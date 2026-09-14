@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+.yarnrc.yml
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+

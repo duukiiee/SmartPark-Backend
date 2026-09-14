@@ -1,19 +1,16 @@
 import express from "express";
 import cors from "cors";
+import { corsconf } from "./config/cors.js";
 
 const app = express();
+app.use(corsconf);
 
-const PORT = 5000;
+function startServer() {
+  const port: number = 5000;
 
-app.use(cors());
-app
-
-app.get("/api/test", (req, res) => {
-  res.json({
-    message: "Hello from Smart Park Backend!",
+  app.listen(port, () => {
+    console.log(`Server running at http://localhost:${port}`);
   });
-});
+}
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-});
+startServer();

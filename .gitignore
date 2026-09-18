@@ -11,4 +11,13 @@ build/
 out/
 *.tsbuildinfo
 
+# Environment variables
 .env
+.env.*
+!.env.example
+
+# AI coding tool files
+.claude/
+.cursor/
+.agents/
+.devin/

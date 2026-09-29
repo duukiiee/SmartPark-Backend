@@ -7,7 +7,7 @@ export const registerSchema = z.object({
   schoolId: z.string().trim().min(3, "Student/Employee ID must be at least 3 characters"),
   phone: z.string().trim().optional(),
   password: z.string().min(6, "Password must be at least 6 characters"),
-  role: z.enum(["USER", "GUARD", "ADMIN"]).default("STUDENT"),
+  role: z.enum(["USER", "GUARD", "ADMIN"]).default("USER"),
 });
 
 export const loginSchema = z.object({

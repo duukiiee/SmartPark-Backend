@@ -3,8 +3,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db } from "../prisma/db.js";
 import { authLimiter } from "../middlewares/rateLimiter.js";
-import { requireAuth } from "../middlewares/authMiddleware.js";
-import { registerSchema, loginSchema } from "../validations/authValidation.js";
+import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
+import { registerSchema, loginSchema, adminRegisterSchema } from "../validations/authValidation.js";
 
 const router = Router();
 
@@ -23,7 +23,7 @@ router.post("/register", authLimiter, async (req, res, next) => {
       });
     }
 
-    const { firstName, lastName, email, schoolId, phone, password, role } = validation.data;
+    const { firstName, lastName, email, schoolId, phone, password } = validation.data;
     const normalizedEmail = email.toLowerCase();
 
     // 2. Check if email already exists in Supabase
@@ -48,11 +48,25 @@ router.post("/register", authLimiter, async (req, res, next) => {
       });
     }
 
-    // 4. Secure Password Hashing
+    // 4. Determine accountType server-side based on validated schoolId pattern
+    let accountType = "STUDENT";
+    if (/^\d{2}-\d{4}$/.test(schoolId)) {
+      accountType = "STUDENT";
+    } else if (/^[A-Za-z]{2}-\d{7}$/.test(schoolId)) {
+      accountType = "EMPLOYEE";
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid Student/Employee ID format",
+      });
+    }
+
+    // 5. Secure Password Hashing
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // 5. Save to Supabase PostgreSQL via Prisma 7 Client
+    // 6. Save to Supabase PostgreSQL via Prisma 7 Client
+    // Public registration ALWAYS gets USER role - never trust frontend role
     const newUser = await db.user.create({
       data: {
         firstName,
@@ -61,12 +75,13 @@ router.post("/register", authLimiter, async (req, res, next) => {
         schoolId,
         phone: phone || null,
         password: hashedPassword,
-        role: role || "STUDENT",
+        role: "USER",
+        accountType,
         accountStatus: "Active",
       },
     });
 
-    // 6. Generate JWT Token
+    // 7. Generate JWT Token
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
       console.error("JWT_SECRET missing in environment variables");
@@ -81,13 +96,14 @@ router.post("/register", authLimiter, async (req, res, next) => {
         id: newUser.id,
         email: newUser.email,
         role: newUser.role,
+        accountType: newUser.accountType,
         schoolId: newUser.schoolId,
       },
       jwtSecret,
       { expiresIn: "7d" }
     );
 
-    // 7. Safe response (never return password)
+    // 8. Safe response (never return password)
     return res.status(201).json({
       success: true,
       message: "Registration successful",
@@ -100,6 +116,7 @@ router.post("/register", authLimiter, async (req, res, next) => {
         schoolId: newUser.schoolId,
         phone: newUser.phone,
         role: newUser.role,
+        accountType: newUser.accountType,
         accountStatus: newUser.accountStatus,
       },
     });
@@ -193,6 +210,7 @@ router.post("/login", authLimiter, async (req, res, next) => {
         id: user.id,
         email: user.email,
         role: user.role,
+        accountType: user.accountType,
         schoolId: user.schoolId,
       },
       jwtSecret,
@@ -212,6 +230,7 @@ router.post("/login", authLimiter, async (req, res, next) => {
         schoolId: user.schoolId,
         phone: user.phone,
         role: user.role,
+        accountType: user.accountType,
         accountStatus: user.accountStatus,
       },
     });
@@ -247,6 +266,78 @@ router.get("/me", requireAuth, async (req, res, next) => {
         role: user.role,
         accountStatus: user.accountStatus,
         createdAt: user.createdAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 4. ADMIN-ONLY REGISTER (POST /api/admin-register)
+// ==========================================
+router.post("/admin-register", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
+  try {
+    const validation = adminRegisterSchema.safeParse(req.body);
+    if (!validation.success) {
+      const issue = validation.error.issues[0];
+      return res.status(400).json({
+        success: false,
+        message: issue ? `${issue.path.join(".")}: ${issue.message}` : "Validation error",
+      });
+    }
+
+    const { firstName, lastName, email, schoolId, phone, password, role } = validation.data;
+    const normalizedEmail = email.toLowerCase();
+
+    const existingEmail = await db.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+    if (existingEmail) {
+      return res.status(409).json({
+        success: false,
+        message: "An account with this email address already exists",
+      });
+    }
+
+    const existingSchoolId = await db.user.findUnique({
+      where: { schoolId },
+    });
+    if (existingSchoolId) {
+      return res.status(409).json({
+        success: false,
+        message: "An account with this Student/Employee ID already exists",
+      });
+    }
+
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    const newUser = await db.user.create({
+      data: {
+        firstName,
+        lastName,
+        email: normalizedEmail,
+        schoolId,
+        phone: phone || null,
+        password: hashedPassword,
+        role: role,
+        accountStatus: "Active",
+      },
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: `${role} account created successfully`,
+      user: {
+        id: newUser.id,
+        firstName: newUser.firstName,
+        lastName: newUser.lastName,
+        email: newUser.email,
+        schoolId: newUser.schoolId,
+        phone: newUser.phone,
+        role: newUser.role,
+        accountStatus: newUser.accountStatus,
       },
     });
   } catch (error) {

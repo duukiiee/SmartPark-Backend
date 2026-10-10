@@ -14,7 +14,8 @@ model User {
   schoolId      String   @unique
   phone         String?
   password      String
-  role          String   @default("STUDENT")
+  role          String   @default("USER")
+  accountType   String   @default("STUDENT")
   accountStatus String   @default("Active")
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt

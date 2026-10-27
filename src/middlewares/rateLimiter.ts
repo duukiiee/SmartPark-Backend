@@ -11,3 +11,18 @@ export const authLimiter = rateLimit({
     message: "Too many login/registration attempts. Please try again after 15 minutes.",
   },
 });
+
+// Dedicated rate limiter for login endpoint
+// - 5 failed attempts per 15 minutes
+// - Does not count successful logins
+export const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 failed login attempts
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true, // Don't count successful logins against the limit
+  message: {
+    success: false,
+    message: "Too many failed login attempts. Please try again after 15 minutes.",
+  },
+});

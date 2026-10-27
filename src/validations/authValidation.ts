@@ -16,7 +16,6 @@ export const registerSchema = z.object({
   schoolId: schoolIdSchema,
   phone: z.string().trim().optional(),
   password: z.string().min(6, "Password must be at least 6 characters"),
-  // Remove role from public registration - backend will assign "USER"
 });
 
 export const loginSchema = z.object({
@@ -33,4 +32,20 @@ export const adminRegisterSchema = z.object({
   phone: z.string().trim().optional(),
   password: z.string().min(6, "Password must be at least 6 characters"),
   role: z.enum(["GUARD", "ADMIN"]),
+});
+
+// Password reset schemas
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().email("Invalid email address"),
+});
+
+export const verifyOtpSchema = z.object({
+  email: z.string().trim().email("Invalid email address"),
+  otp: z.string().length(6, "OTP must be exactly 6 digits"),
+});
+
+export const resetPasswordSchema = z.object({
+  email: z.string().trim().email("Invalid email address"),
+  otp: z.string().length(6, "OTP must be exactly 6 digits"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
 });

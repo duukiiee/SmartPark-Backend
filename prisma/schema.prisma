@@ -22,3 +22,13 @@ model User {
 
   @@map("user")
 }
+
+model PasswordResetOtp {
+  id        Int      @id @default(autoincrement())
+  email     String
+  otp       String   // 6-digit code
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}

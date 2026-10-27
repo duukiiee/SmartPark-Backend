@@ -1,10 +1,12 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { db } from "../prisma/db.js";
-import { authLimiter } from "../middlewares/rateLimiter.js";
+import { loginRateLimiter, authLimiter } from "../middlewares/rateLimiter.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
-import { registerSchema, loginSchema, adminRegisterSchema } from "../validations/authValidation.js";
+import { registerSchema, loginSchema, adminRegisterSchema, forgotPasswordSchema, verifyOtpSchema, resetPasswordSchema } from "../validations/authValidation.js";
+import { sendPasswordResetEmail } from "../utils/email.js";
 
 const router = Router();
 
@@ -126,9 +128,9 @@ router.post("/register", authLimiter, async (req, res, next) => {
 });
 
 // ==========================================
-// 2. LOGIN ENDPOINT (POST /api/login)
+// 2. LOGIN ENDPOINT (POST /api/login) - Rate Limited
 // ==========================================
-router.post("/login", authLimiter, async (req, res, next) => {
+router.post("/login", loginRateLimiter, async (req, res, next) => {
   try {
     // 1. Input Validation with Zod
     const validation = loginSchema.safeParse(req.body);
@@ -343,6 +345,201 @@ router.post("/admin-register", requireAuth, requireRole("ADMIN"), async (req, re
   } catch (error) {
     next(error);
   }
+});
+
+// ==========================================
+// 5. FORGOT PASSWORD - SEND OTP (POST /api/forgot-password)
+// ==========================================
+router.post("/forgot-password", authLimiter, async (req, res, next) => {
+  try {
+    // Validate email input
+    const validation = forgotPasswordSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide a valid email address",
+      });
+    }
+
+    const { email } = validation.data;
+    const normalizedEmail = email.toLowerCase();
+
+    // Check if user exists
+    const user = await db.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    // Always return success even if email doesn't exist (prevent email enumeration)
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: "If an account with that email exists, a verification code has been sent",
+      });
+    }
+
+    // Delete any existing OTP for this email
+    await db.passwordResetOtp.deleteMany({
+      where: { email: normalizedEmail },
+    });
+
+    // Generate new 6-digit OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+
+    // Save OTP to database with 15-minute expiry
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    await db.passwordResetOtp.create({
+      data: {
+        email: normalizedEmail,
+        otp,
+        expiresAt,
+      },
+    });
+
+    // Send OTP via email
+    const emailSent = await sendPasswordResetEmail(
+      normalizedEmail,
+      otp,
+      user.firstName
+    );
+
+    if (!emailSent) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to send verification code. Please try again.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Verification code sent to your email",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 6. VERIFY OTP (POST /api/verify-otp)
+// ==========================================
+router.post("/verify-otp", authLimiter, async (req, res, next) => {
+  try {
+    const validation = verifyOtpSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid input",
+      });
+    }
+
+    const { email, otp } = validation.data;
+    const normalizedEmail = email.toLowerCase();
+
+    // Find valid OTP record
+    const otpRecord = await db.passwordResetOtp.findFirst({
+      where: {
+        email: normalizedEmail,
+        otp: otp,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired verification code",
+      });
+    }
+
+    // OTP is valid - delete it (one-time use)
+    await db.passwordResetOtp.delete({
+      where: { id: otpRecord.id },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Verification code accepted",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 7. RESET PASSWORD (POST /api/reset-password)
+// ==========================================
+router.post("/reset-password", authLimiter, async (req, res, next) => {
+  try {
+    const validation = resetPasswordSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid input",
+      });
+    }
+
+    const { email, otp, password } = validation.data;
+    const normalizedEmail = email.toLowerCase();
+
+    // Find valid OTP record
+    const otpRecord = await db.passwordResetOtp.findFirst({
+      where: {
+        email: normalizedEmail,
+        otp: otp,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired verification code",
+      });
+    }
+
+    // Verify user exists
+    const user = await db.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Hash new password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Update password
+    await db.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    // Delete used OTP
+    await db.passwordResetOtp.delete({
+      where: { id: otpRecord.id },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset successful. You can now log in with your new password.",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 8. LOGOUT (POST /api/logout)
+// ==========================================
+router.post("/logout", async (req, res, next) => {
+  return res.status(200).json({
+    success: true,
+    message: "Logged out successfully",
+  });
 });
 
 export default router;

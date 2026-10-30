@@ -39,6 +39,12 @@ const transporter = createTransporter();
  * @param otp - 6-digit OTP code
  * @param firstName - User's first name for personalization
  */
+/**
+ * Send password reset OTP email
+ * @param email - Recipient email address
+ * @param otp - 6-digit OTP code
+ * @param firstName - User's first name for personalization
+ */
 export async function sendPasswordResetEmail(
   email: string,
   otp: string,
@@ -151,4 +157,93 @@ export function validatePasswordStrength(password: string): {
     return { valid: false, message: "Password must contain at least one number" };
   }
   return { valid: true, message: "Password meets strength requirements" };
+}
+
+/**
+ * Send email verification OTP
+ * @param email - Recipient email address
+ * @param otp - 6-digit OTP code
+ * @param firstName - User's first name for personalization
+ */
+export async function sendVerificationEmail(
+  email: string,
+  otp: string,
+  firstName: string
+): Promise<boolean> {
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #0053CC, #2563eb); padding: 30px; border-radius: 12px 12px 0 0; text-align: center; }
+        .content { background: #ffffff; padding: 30px; border: 1px solid #e2e8f0; }
+        .otp-box { background: #f8fafc; border: 2px dashed #0053CC; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }
+        .otp-code { font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0053CC; font-family: monospace; }
+        .warning { color: #64748b; font-size: 12px; margin-top: 20px; }
+        .footer { background: #f1f5f9; padding: 20px; text-align: center; font-size: 12px; color: #64748b; border-radius: 0 0 12px 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1 style="color: white; margin: 0;">SmartPark</h1>
+          <p style="color: #bfdbfe; margin: 10px 0 0 0;">QCU Parking Management System</p>
+        </div>
+        <div class="content">
+          <p>Hi ${firstName},</p>
+          <p>Thank you for registering with SmartPark. Please use the following 6-digit verification code to activate your account:</p>
+          
+          <div class="otp-box">
+            <p style="margin: 0 0 10px 0; color: #64748b; font-size: 14px;">Your verification code:</p>
+            <div class="otp-code">${otp}</div>
+          </div>
+          
+          <p>This code will expire in <strong>15 minutes</strong>.</p>
+          
+          <p class="warning">
+            If you didn't create a SmartPark account, please ignore this email.
+          </p>
+        </div>
+        <div class="footer">
+          <p style="margin: 0;">© ${new Date().getFullYear()} SmartPark - Quezon City University</p>
+          <p style="margin: 5px 0 0 0;">This is an automated message, please do not reply directly to this email.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const textContent = `
+Hi ${firstName},
+
+Thank you for registering with SmartPark. Please use the following 6-digit verification code to activate your account: ${otp}
+
+This code will expire in 15 minutes.
+
+If you didn't create a SmartPark account, please ignore this email.
+
+© ${new Date().getFullYear()} SmartPark - Quezon City University
+  `;
+
+  if (!transporter) {
+    console.log(`[DEV MODE] Email verification OTP for ${email}: ${otp}`);
+    return true;
+  }
+
+  try {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || "SmartPark <noreply@smartpark.com>",
+      to: email,
+      subject: "Verify Your SmartPark Account",
+      text: textContent,
+      html: htmlContent,
+    });
+    console.log(`Email verification OTP sent to ${email}`);
+    return true;
+  } catch (error) {
+    console.error("Failed to send verification email:", error);
+    return false;
+  }
 }

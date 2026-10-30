@@ -5,8 +5,8 @@ import crypto from "crypto";
 import { db } from "../prisma/db.js";
 import { loginRateLimiter, authLimiter, checkAccountLockout, recordFailedLogin, recordSuccessfulLogin } from "../middlewares/rateLimiter.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
-import { registerSchema, loginSchema, adminRegisterSchema, forgotPasswordSchema, verifyOtpSchema, resetPasswordSchema } from "../validations/authValidation.js";
-import { sendPasswordResetEmail } from "../utils/email.js";
+import { registerSchema, loginSchema, adminRegisterSchema, forgotPasswordSchema, verifyOtpSchema, resetPasswordSchema, verifyEmailSchema, resendVerificationSchema } from "../validations/authValidation.js";
+import { sendPasswordResetEmail, sendVerificationEmail } from "../utils/email.js";
 
 const router = Router();
 
@@ -79,48 +79,34 @@ router.post("/register", authLimiter, async (req, res, next) => {
         password: hashedPassword,
         role: "USER",
         accountType,
-        accountStatus: "Active",
+        accountStatus: "PendingVerification",
       },
     });
 
-    // 7. Generate JWT Token
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      console.error("JWT_SECRET missing in environment variables");
-      return res.status(500).json({
-        success: false,
-        message: "Server configuration error",
-      });
-    }
+    // Delete any existing verification OTPs for this email
+    await db.emailVerificationOtp.deleteMany({
+      where: { email: normalizedEmail },
+    });
 
-    const token = jwt.sign(
-      {
-        id: newUser.id,
-        email: newUser.email,
-        role: newUser.role,
-        accountType: newUser.accountType,
-        schoolId: newUser.schoolId,
+    // Generate 6-digit OTP (valid for 15 minutes)
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    await db.emailVerificationOtp.create({
+      data: {
+        email: normalizedEmail,
+        otp,
+        expiresAt,
       },
-      jwtSecret,
-      { expiresIn: "7d" }
-    );
+    });
 
-    // 8. Safe response (never return password)
+    // Send verification email
+    await sendVerificationEmail(normalizedEmail, otp, newUser.firstName);
+
     return res.status(201).json({
       success: true,
-      message: "Registration successful",
-      token,
-      user: {
-        id: newUser.id,
-        firstName: newUser.firstName,
-        lastName: newUser.lastName,
-        email: newUser.email,
-        schoolId: newUser.schoolId,
-        phone: newUser.phone,
-        role: newUser.role,
-        accountType: newUser.accountType,
-        accountStatus: newUser.accountStatus,
-      },
+      message: "Registration successful! A 6-digit verification code has been sent to your email.",
+      email: normalizedEmail,
     });
   } catch (error) {
     next(error);
@@ -217,7 +203,7 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       });
     }
 
-    // 5. Check Account Status (Active, Suspended, Locked) AFTER password verification
+    // 5. Check Account Status (Active, Suspended, Locked, PendingVerification) AFTER password verification
     if (user.accountStatus === "Suspended") {
       return res.status(403).json({
         success: false,
@@ -231,6 +217,15 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
         success: false,
         status: "Locked",
         message: "Your account is temporarily locked.",
+      });
+    }
+
+    if (user.accountStatus === "PendingVerification") {
+      return res.status(403).json({
+        success: false,
+        status: "PendingVerification",
+        email: user.email,
+        message: "Your account email is not yet verified. Please verify your email before logging in.",
       });
     }
 
@@ -670,6 +665,132 @@ router.post("/logout", async (req, res, next) => {
     success: true,
     message: "Logged out successfully",
   });
+});
+
+// ==========================================
+// 10. VERIFY EMAIL (POST /api/verify-email)
+// ==========================================
+router.post("/verify-email", authLimiter, async (req, res, next) => {
+  try {
+    const validation = verifyEmailSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid input. Please provide email and 6-digit OTP.",
+      });
+    }
+
+    const { email, otp } = validation.data;
+    const normalizedEmail = email.toLowerCase();
+
+    // Find valid OTP record
+    const otpRecord = await db.emailVerificationOtp.findFirst({
+      where: {
+        email: normalizedEmail,
+        otp: otp,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!otpRecord) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired verification code",
+      });
+    }
+
+    // Find user
+    const user = await db.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Update accountStatus to Active
+    await db.user.update({
+      where: { id: user.id },
+      data: { accountStatus: "Active" },
+    });
+
+    // Delete used OTP
+    await db.emailVerificationOtp.delete({
+      where: { id: otpRecord.id },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Email verified successfully! You may now sign in.",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 11. RESEND VERIFICATION OTP (POST /api/resend-verification-otp)
+// ==========================================
+router.post("/resend-verification-otp", authLimiter, async (req, res, next) => {
+  try {
+    const validation = resendVerificationSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide a valid email address",
+      });
+    }
+
+    const { email } = validation.data;
+    const normalizedEmail = email.toLowerCase();
+
+    const user = await db.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: "If an unverified account with this email exists, a new verification code has been sent.",
+      });
+    }
+
+    if (user.accountStatus !== "PendingVerification") {
+      return res.status(400).json({
+        success: false,
+        message: "This account is already verified or active.",
+      });
+    }
+
+    // Delete existing OTPs for this email
+    await db.emailVerificationOtp.deleteMany({
+      where: { email: normalizedEmail },
+    });
+
+    // Generate new 6-digit OTP (15 min expiry)
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    await db.emailVerificationOtp.create({
+      data: {
+        email: normalizedEmail,
+        otp,
+        expiresAt,
+      },
+    });
+
+    await sendVerificationEmail(normalizedEmail, otp, user.firstName);
+
+    return res.status(200).json({
+      success: true,
+      message: "A new verification code has been sent to your email.",
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 export default router;

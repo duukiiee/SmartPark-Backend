@@ -12,10 +12,27 @@ const schoolIdSchema = z
 export const registerSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required"),
   lastName: z.string().trim().min(1, "Last name is required"),
-  email: z.string().trim().email("Invalid email address"),
+  email: z.string().trim().email("Invalid email format"),
   schoolId: schoolIdSchema,
   phone: z.string().trim().optional(),
-  password: z.string().min(6, "Password must be at least 6 characters"),
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters long")
+    .regex(/[A-Z]/, "Password must contain at least one uppercase letter (A-Z)")
+    .regex(/[a-z]/, "Password must contain at least one lowercase letter (a-z)")
+    .regex(/[0-9]/, "Password must contain at least one number (0-9)"),
+  declaration: z.boolean().refine((val) => val === true, {
+    message: "You must accept the terms and declare information is correct.",
+  }),
+});
+
+export const verifyEmailSchema = z.object({
+  email: z.string().trim().email("Invalid email format"),
+  otp: z.string().length(6, "OTP must be exactly 6 digits"),
+});
+
+export const resendVerificationSchema = z.object({
+  email: z.string().trim().email("Invalid email format"),
 });
 
 export const loginSchema = z.object({

@@ -32,3 +32,13 @@ model PasswordResetOtp {
 
   @@index([email])
 }
+
+model EmailVerificationOtp {
+  id        Int      @id @default(autoincrement())
+  email     String
+  otp       String   // 6-digit code
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}

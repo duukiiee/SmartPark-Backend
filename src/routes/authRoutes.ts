@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { db } from "../prisma/db.js";
-import { loginRateLimiter, authLimiter } from "../middlewares/rateLimiter.js";
+import { loginRateLimiter, authLimiter, checkAccountLockout, recordFailedLogin, recordSuccessfulLogin } from "../middlewares/rateLimiter.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
 import { registerSchema, loginSchema, adminRegisterSchema, forgotPasswordSchema, verifyOtpSchema, resetPasswordSchema } from "../validations/authValidation.js";
 import { sendPasswordResetEmail } from "../utils/email.js";
@@ -145,7 +145,19 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
     const { identifier, password } = validation.data;
     const normalizedIdentifier = identifier.trim();
 
-    // 2. Support Dual Login: Email OR School ID
+    // 2. Check Server-Side Account Lockout before processing
+    const lockCheck = checkAccountLockout(normalizedIdentifier);
+    if (lockCheck.isLocked) {
+      return res.status(423).json({
+        success: false,
+        status: "Locked",
+        lockUntil: lockCheck.lockUntil,
+        remainingSeconds: lockCheck.remainingSeconds,
+        message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
+      });
+    }
+
+    // 3. Support Dual Login: Email OR School ID
     let user = null;
     if (normalizedIdentifier.includes("@")) {
       user = await db.user.findUnique({
@@ -165,13 +177,47 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
     }
 
     if (!user) {
+      const fail = recordFailedLogin(normalizedIdentifier);
+      if (fail.isLocked) {
+        return res.status(423).json({
+          success: false,
+          status: "Locked",
+          lockUntil: fail.lockUntil,
+          remainingSeconds: fail.remainingSeconds,
+          message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
+        });
+      }
       return res.status(401).json({
         success: false,
-        message: "Invalid email/school ID or password",
+        remainingAttempts: fail.remainingAttempts,
+        message: `Invalid email/school ID or password. (${fail.remainingAttempts} attempt${fail.remainingAttempts === 1 ? "" : "s"} remaining before 15-minute account lockout)`,
       });
     }
 
-    // 3. Check Account Status (Active, Suspended, Locked)
+    // 4. Verify Hashed Password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      const fail = recordFailedLogin(normalizedIdentifier);
+      recordFailedLogin(user.email);
+      recordFailedLogin(user.schoolId);
+
+      if (fail.isLocked) {
+        return res.status(423).json({
+          success: false,
+          status: "Locked",
+          lockUntil: fail.lockUntil,
+          remainingSeconds: fail.remainingSeconds,
+          message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
+        });
+      }
+      return res.status(401).json({
+        success: false,
+        remainingAttempts: fail.remainingAttempts,
+        message: `Invalid email/school ID or password. (${fail.remainingAttempts} attempt${fail.remainingAttempts === 1 ? "" : "s"} remaining before 15-minute account lockout)`,
+      });
+    }
+
+    // 5. Check Account Status (Active, Suspended, Locked) AFTER password verification
     if (user.accountStatus === "Suspended") {
       return res.status(403).json({
         success: false,
@@ -188,14 +234,10 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       });
     }
 
-    // 4. Verify Hashed Password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email/school ID or password",
-      });
-    }
+    // Clear failed attempts upon successful login
+    recordSuccessfulLogin(normalizedIdentifier);
+    recordSuccessfulLogin(user.email);
+    recordSuccessfulLogin(user.schoolId);
 
     // 5. Generate Signed JWT Token
     const jwtSecret = process.env.JWT_SECRET;
@@ -253,6 +295,29 @@ router.get("/me", requireAuth, async (req, res, next) => {
       return res.status(404).json({
         success: false,
         message: "User not found",
+      });
+    }
+
+    if (user.accountStatus === "Suspended") {
+      return res.status(403).json({
+        success: false,
+        status: "Suspended",
+        message: "Your account has been suspended. Please submit an appeal for review.",
+      });
+    }
+
+    if (user.accountStatus === "Locked") {
+      return res.status(403).json({
+        success: false,
+        status: "Locked",
+        message: "Your account is temporarily locked.",
+      });
+    }
+
+    if (user.accountStatus !== "Active") {
+      return res.status(403).json({
+        success: false,
+        message: "Account is not active. Access denied.",
       });
     }
 
@@ -533,7 +598,63 @@ router.post("/reset-password", authLimiter, async (req, res, next) => {
 });
 
 // ==========================================
-// 8. LOGOUT (POST /api/logout)
+// 8. CHANGE PASSWORD (POST /api/change-password) - Protected
+// ==========================================
+router.post("/change-password", requireAuth, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Current password and new password are required",
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must be at least 8 characters long",
+      });
+    }
+
+    const user = await db.user.findUnique({
+      where: { id: req.user!.id },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        message: "Incorrect current password. Please try again.",
+      });
+    }
+
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    await db.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Password changed successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 9. LOGOUT (POST /api/logout)
 // ==========================================
 router.post("/logout", async (req, res, next) => {
   return res.status(200).json({

@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { db } from "../prisma/db.js";
 
 export interface TokenPayload {
   id: number;
@@ -17,7 +18,7 @@ declare global {
   }
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -49,7 +50,56 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   try {
     const decoded = jwt.verify(token, jwtSecret) as unknown as TokenPayload;
-    req.user = decoded;
+
+    // Stateful check: verify user still exists and account is Active in database
+    const user = await db.user.findUnique({
+      where: { id: decoded.id },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        schoolId: true,
+        accountStatus: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "User account no longer exists",
+      });
+    }
+
+    if (user.accountStatus === "Suspended") {
+      return res.status(403).json({
+        success: false,
+        status: "Suspended",
+        message: "Your account has been suspended. Please submit an appeal for review.",
+      });
+    }
+
+    if (user.accountStatus === "Locked") {
+      return res.status(403).json({
+        success: false,
+        status: "Locked",
+        message: "Your account is temporarily locked.",
+      });
+    }
+
+    if (user.accountStatus !== "Active") {
+      return res.status(403).json({
+        success: false,
+        message: "Account is not active. Access denied.",
+      });
+    }
+
+    req.user = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      schoolId: user.schoolId,
+    };
+
     next();
   } catch (error) {
     return res.status(401).json({

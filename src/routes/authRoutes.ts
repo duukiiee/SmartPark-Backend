@@ -343,7 +343,7 @@ router.get("/me", requireAuth, async (req, res, next) => {
 // ==========================================
 // 4. ADMIN-ONLY REGISTER (POST /api/admin-register)
 // ==========================================
-router.post("/admin-register", requireAuth, requireRole("ADMIN"), async (req, res, next) => {
+router.post("/admin-register", requireAuth, requireRole("ADMIN", "SUPER_ADMIN"), async (req, res, next) => {
   try {
     const validation = adminRegisterSchema.safeParse(req.body);
     if (!validation.success) {
@@ -356,6 +356,15 @@ router.post("/admin-register", requireAuth, requireRole("ADMIN"), async (req, re
 
     const { firstName, lastName, email, schoolId, phone, password, role } = validation.data;
     const normalizedEmail = email.toLowerCase();
+    const callerRole = req.user?.role?.toUpperCase();
+    const targetRole = role.toUpperCase();
+
+    if (targetRole === "ADMIN" && callerRole !== "SUPER_ADMIN") {
+      return res.status(403).json({
+        success: false,
+        message: "Access Denied: Only Super Admins can create new Admin accounts.",
+      });
+    }
 
     const existingEmail = await db.user.findUnique({
       where: { email: normalizedEmail },

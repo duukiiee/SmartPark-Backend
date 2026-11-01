@@ -62,7 +62,11 @@ export const verifyOtpSchema = z.object({
 });
 
 export const resetPasswordSchema = z.object({
-  email: z.string().trim().email("Invalid email address"),
-  otp: z.string().length(6, "OTP must be exactly 6 digits"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
+  resetToken: z.string().min(1, "Reset token is required"),
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters")
+    .regex(/[A-Z]/, "Password must contain at least one uppercase letter (A-Z)")
+    .regex(/[a-z]/, "Password must contain at least one lowercase letter (a-z)")
+    .regex(/[0-9]/, "Password must contain at least one number (0-9)"),
 });

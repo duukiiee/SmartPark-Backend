@@ -475,12 +475,16 @@ router.post("/forgot-password", authLimiter, async (req, res, next) => {
     // Generate new 6-digit OTP
     const otp = crypto.randomInt(100000, 999999).toString();
 
-    // Save OTP to database with 15-minute expiry
+    // Hash OTP using SHA-256 before saving to database
+    const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
+
+    // Save hashed OTP to database with 15-minute expiry and attempts counter
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
     await db.passwordResetOtp.create({
       data: {
         email: normalizedEmail,
-        otp,
+        otp: hashedOtp,
+        attempts: 0,
         expiresAt,
       },
     });
@@ -524,30 +528,73 @@ router.post("/verify-otp", authLimiter, async (req, res, next) => {
     const { email, otp } = validation.data;
     const normalizedEmail = email.toLowerCase();
 
-    // Find valid OTP record
+    // Hash incoming plain OTP with SHA-256
+    const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
+
+    // Find valid OTP record for this email with hashed OTP
     const otpRecord = await db.passwordResetOtp.findFirst({
       where: {
         email: normalizedEmail,
-        otp: otp,
+        otp: hashedOtp,
         expiresAt: { gt: new Date() },
       },
     });
 
     if (!otpRecord) {
+      // OTP not found or expired - check if there's an existing record for this email to increment attempts
+      const existingRecord = await db.passwordResetOtp.findFirst({
+        where: {
+          email: normalizedEmail,
+          expiresAt: { gt: new Date() },
+        },
+      });
+
+      if (existingRecord) {
+        // Increment attempts counter
+        const newAttempts = existingRecord.attempts + 1;
+        if (newAttempts >= 5) {
+          // Too many invalid attempts - invalidate the code
+          await db.passwordResetOtp.delete({
+            where: { id: existingRecord.id },
+          });
+          return res.status(400).json({
+            success: false,
+            message: "Too many invalid attempts. This verification code has been invalidated. Please request a new one.",
+          });
+        } else {
+          await db.passwordResetOtp.update({
+            where: { id: existingRecord.id },
+            data: { attempts: newAttempts },
+          });
+          return res.status(400).json({
+            success: false,
+            message: `Invalid verification code. (${5 - newAttempts} attempts remaining)`,
+          });
+        }
+      }
+
       return res.status(400).json({
         success: false,
         message: "Invalid or expired verification code",
       });
     }
 
-    // OTP is valid - delete it (one-time use)
+    // OTP is valid - delete it (single-use)
     await db.passwordResetOtp.delete({
       where: { id: otpRecord.id },
     });
 
+    // Generate a short-lived resetToken (valid for 15 minutes)
+    const resetToken = jwt.sign(
+      { email: normalizedEmail, purpose: "password_reset" },
+      process.env.JWT_SECRET!,
+      { expiresIn: "15m" }
+    );
+
     return res.status(200).json({
       success: true,
       message: "Verification code accepted",
+      resetToken,
     });
   } catch (error) {
     next(error);
@@ -563,26 +610,41 @@ router.post("/reset-password", authLimiter, async (req, res, next) => {
     if (!validation.success) {
       return res.status(400).json({
         success: false,
-        message: "Invalid input",
+        message: validation.error.issues[0]?.message || "Invalid input",
       });
     }
 
-    const { email, otp, password } = validation.data;
-    const normalizedEmail = email.toLowerCase();
+    const { resetToken, password } = validation.data;
 
-    // Find valid OTP record
-    const otpRecord = await db.passwordResetOtp.findFirst({
-      where: {
-        email: normalizedEmail,
-        otp: otp,
-        expiresAt: { gt: new Date() },
-      },
-    });
-
-    if (!otpRecord) {
+    // Verify and decode resetToken
+    let decoded: { email: string; purpose: string; exp?: number } | null = null;
+    try {
+      decoded = jwt.verify(resetToken, process.env.JWT_SECRET!) as { email: string; purpose: string };
+    } catch (err) {
       return res.status(400).json({
         success: false,
-        message: "Invalid or expired verification code",
+        message: "Reset session expired. Please request a new verification code.",
+      });
+    }
+
+    if (!decoded || decoded.purpose !== "password_reset") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid reset token. Please request a new verification code.",
+      });
+    }
+
+    const normalizedEmail = decoded.email.toLowerCase();
+
+    // Check if token has been revoked
+    const isRevoked = await db.revokedToken.findUnique({
+      where: { token: resetToken },
+    });
+
+    if (isRevoked) {
+      return res.status(400).json({
+        success: false,
+        message: "This reset token has already been used. Please request a new verification code.",
       });
     }
 
@@ -612,14 +674,18 @@ router.post("/reset-password", authLimiter, async (req, res, next) => {
       },
     });
 
-    // Delete used OTP
-    await db.passwordResetOtp.delete({
-      where: { id: otpRecord.id },
+    // Blacklist the used resetToken
+    const tokenExp = decoded.exp || Math.floor(Date.now() / 1000) + 15 * 60;
+    await db.revokedToken.create({
+      data: {
+        token: resetToken,
+        expiresAt: new Date(tokenExp * 1000),
+      },
     });
 
     return res.status(200).json({
       success: true,
-      message: "Password reset successful. You can now log in with your new password.",
+      message: "Password reset successful! You may now sign in.",
     });
   } catch (error) {
     next(error);

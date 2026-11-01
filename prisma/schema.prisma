@@ -37,7 +37,8 @@ model RevokedToken {
 model PasswordResetOtp {
   id        Int      @id @default(autoincrement())
   email     String
-  otp       String   // 6-digit code
+  otp       String   // SHA-256 hashed code
+  attempts  Int      @default(0)
   expiresAt DateTime
   createdAt DateTime @default(now())
 

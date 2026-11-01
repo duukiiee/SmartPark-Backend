@@ -21,3 +21,9 @@ out/
 .cursor/
 .agents/
 .devin/
+
+# Database & Prisma Backups
+prisma/backups/
+*.dump
+*.sql
+*.sqlite

@@ -163,44 +163,64 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
     }
 
     if (!user) {
-      const fail = recordFailedLogin(normalizedIdentifier);
-      if (fail.isLocked) {
-        return res.status(423).json({
-          success: false,
-          status: "Locked",
-          lockUntil: fail.lockUntil,
-          remainingSeconds: fail.remainingSeconds,
-          message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
-        });
-      }
       return res.status(401).json({
         success: false,
-        remainingAttempts: fail.remainingAttempts,
-        message: `Invalid email/school ID or password. (${fail.remainingAttempts} attempt${fail.remainingAttempts === 1 ? "" : "s"} remaining before 15-minute account lockout)`,
+        message: "Invalid email/school ID or password.",
+      });
+    }
+
+    // Check database-backed lockout
+    const now = new Date();
+    if (user.lockedUntil && user.lockedUntil > now) {
+      const remainingSeconds = Math.ceil((user.lockedUntil.getTime() - now.getTime()) / 1000);
+      return res.status(423).json({
+        success: false,
+        status: "Locked",
+        lockUntil: user.lockedUntil.getTime(),
+        remainingSeconds,
+        message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
+      });
+    }
+
+    // If lockout has expired, reset failedAttempts and lockedUntil
+    if (user.lockedUntil && user.lockedUntil <= now) {
+      user = await db.user.update({
+        where: { id: user.id },
+        data: { failedAttempts: 0, lockedUntil: null },
       });
     }
 
     // 4. Verify Hashed Password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      const fail = recordFailedLogin(normalizedIdentifier);
-      recordFailedLogin(user.email);
-      recordFailedLogin(user.schoolId);
-
-      if (fail.isLocked) {
+      const newAttempts = user.failedAttempts + 1;
+      let lockedUntil: Date | null = null;
+      if (newAttempts >= 5) {
+        lockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+        await db.user.update({
+          where: { id: user.id },
+          data: { failedAttempts: newAttempts, lockedUntil },
+        });
+        const remainingSeconds = Math.ceil((lockedUntil.getTime() - Date.now()) / 1000);
         return res.status(423).json({
           success: false,
           status: "Locked",
-          lockUntil: fail.lockUntil,
-          remainingSeconds: fail.remainingSeconds,
+          lockUntil: lockedUntil.getTime(),
+          remainingSeconds,
           message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
         });
+      } else {
+        await db.user.update({
+          where: { id: user.id },
+          data: { failedAttempts: newAttempts },
+        });
+        const remainingAttempts = 5 - newAttempts;
+        return res.status(401).json({
+          success: false,
+          remainingAttempts,
+          message: `Invalid email/school ID or password. (${remainingAttempts} attempt${remainingAttempts === 1 ? "" : "s"} remaining before 15-minute account lockout)`,
+        });
       }
-      return res.status(401).json({
-        success: false,
-        remainingAttempts: fail.remainingAttempts,
-        message: `Invalid email/school ID or password. (${fail.remainingAttempts} attempt${fail.remainingAttempts === 1 ? "" : "s"} remaining before 15-minute account lockout)`,
-      });
     }
 
     // 5. Check Account Status (Active, Suspended, Locked, PendingVerification) AFTER password verification
@@ -229,10 +249,11 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       });
     }
 
-    // Clear failed attempts upon successful login
-    recordSuccessfulLogin(normalizedIdentifier);
-    recordSuccessfulLogin(user.email);
-    recordSuccessfulLogin(user.schoolId);
+    // Clear failed attempts and lockedUntil upon successful login
+    await db.user.update({
+      where: { id: user.id },
+      data: { failedAttempts: 0, lockedUntil: null },
+    });
 
     // 5. Generate Signed JWT Token
     const jwtSecret = process.env.JWT_SECRET;
@@ -581,10 +602,14 @@ router.post("/reset-password", authLimiter, async (req, res, next) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Update password
+    // Update password and reset lockout
     await db.user.update({
       where: { id: user.id },
-      data: { password: hashedPassword },
+      data: {
+        password: hashedPassword,
+        failedAttempts: 0,
+        lockedUntil: null,
+      },
     });
 
     // Delete used OTP
@@ -661,10 +686,42 @@ router.post("/change-password", requireAuth, async (req, res, next) => {
 // 9. LOGOUT (POST /api/logout)
 // ==========================================
 router.post("/logout", async (req, res, next) => {
-  return res.status(200).json({
-    success: true,
-    message: "Logged out successfully",
-  });
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.split(" ")[1];
+      if (token) {
+        try {
+          const jwtSecret = process.env.JWT_SECRET || "";
+          const decoded = jwt.verify(token, jwtSecret) as { exp?: number };
+          const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 24 * 60 * 1000);
+          const existing = await db.revokedToken.findUnique({ where: { token } });
+          if (!existing) {
+            await db.revokedToken.create({
+              data: { token, expiresAt },
+            });
+          }
+        } catch (e) {
+          try {
+            const existing = await db.revokedToken.findUnique({ where: { token } });
+            if (!existing) {
+              await db.revokedToken.create({
+                data: { token, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 1000) },
+              });
+            }
+          } catch (dbErr) {
+            // ignore
+          }
+        }
+      }
+    }
+    return res.status(200).json({
+      success: true,
+      message: "Logged out and token revoked successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // ==========================================

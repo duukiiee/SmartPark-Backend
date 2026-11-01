@@ -51,6 +51,17 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const decoded = jwt.verify(token, jwtSecret) as unknown as TokenPayload;
 
+    // Check if token has been revoked
+    const isRevoked = await db.revokedToken.findUnique({
+      where: { token },
+    });
+    if (isRevoked) {
+      return res.status(401).json({
+        success: false,
+        message: "Session expired. This token has been revoked. Please sign in again.",
+      });
+    }
+
     // Stateful check: verify user still exists and account is Active in database
     const user = await db.user.findUnique({
       where: { id: decoded.id },

@@ -13,6 +13,7 @@ model User {
   email         String    @unique
   schoolId      String    @unique
   phone         String?
+  avatar        String?
   password      String
   role          String    @default("USER")
   accountType   String    @default("STUDENT")

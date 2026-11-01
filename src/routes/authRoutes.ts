@@ -346,10 +346,79 @@ router.get("/me", requireAuth, async (req, res, next) => {
         email: user.email,
         schoolId: user.schoolId,
         phone: user.phone,
+        avatar: user.avatar,
         role: user.role,
         accountStatus: user.accountStatus,
         createdAt: user.createdAt,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 3.1. UPDATE USER PROFILE (PATCH /api/users/profile) - Protected
+// ==========================================
+router.patch("/users/profile", requireAuth, async (req, res, next) => {
+  try {
+    const { phone, fullName, firstName, lastName, avatar } = req.body;
+
+    // Security: Build update data - only allow these fields
+    const updateData: { phone?: string | null; firstName?: string; lastName?: string; avatar?: string | null } = {};
+
+    if (phone !== undefined) {
+      updateData.phone = phone || null;
+    }
+
+    if (avatar !== undefined) {
+      updateData.avatar = avatar || null;
+    }
+
+    // Handle fullName splitting
+    if (fullName && typeof fullName === "string" && fullName.trim()) {
+      const names = fullName.trim().split(/\s+/);
+      const first = names[0] ?? "";
+      const last = names.slice(1).join(" ") || first;
+      if (first) {
+        updateData.firstName = first;
+        updateData.lastName = last;
+      }
+    }
+
+    // Handle explicit firstName/lastName
+    if (firstName !== undefined && typeof firstName === "string" && firstName.trim()) {
+      updateData.firstName = firstName.trim();
+    }
+
+    if (lastName !== undefined && typeof lastName === "string" && lastName.trim()) {
+      updateData.lastName = lastName.trim();
+    }
+
+    // Update user in database
+    const updatedUser = await db.user.update({
+      where: { id: req.user!.id },
+      data: updateData,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        schoolId: true,
+        phone: true,
+        avatar: true,
+        role: true,
+        accountType: true,
+        accountStatus: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated successfully",
+      user: updatedUser,
     });
   } catch (error) {
     next(error);

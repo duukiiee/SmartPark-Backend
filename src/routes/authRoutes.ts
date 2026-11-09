@@ -457,10 +457,10 @@ router.post("/admin-register", requireAuth, requireRole("ADMIN", "SUPER_ADMIN"),
     const callerRole = req.user?.role?.toUpperCase();
     const targetRole = role.toUpperCase();
 
-    if (targetRole === "ADMIN" && callerRole !== "SUPER_ADMIN") {
+    if ((targetRole === "ADMIN" || targetRole === "SUPER_ADMIN") && callerRole !== "SUPER_ADMIN") {
       return res.status(403).json({
         success: false,
-        message: "Access Denied: Only Super Admins can create new Admin accounts.",
+        message: "Access Denied: Only Super Admins can create new Admin or Super Admin accounts.",
       });
     }
 

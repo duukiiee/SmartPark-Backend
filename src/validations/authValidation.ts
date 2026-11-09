@@ -66,7 +66,7 @@ export const adminRegisterSchema = z.object({
   schoolId: schoolIdSchema,
   phone: philippinePhoneSchema,
   password: z.string().min(6, "Password must be at least 6 characters"),
-  role: z.enum(["GUARD", "ADMIN"]),
+  role: z.enum(["GUARD", "ADMIN", "SUPER_ADMIN"]),
 });
 
 // Password reset schemas

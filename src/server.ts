@@ -20,8 +20,8 @@ app.use(helmet());
 app.use(corsconf);
 
 // Body parser with payload size limit to prevent DoS attacks
-app.use(express.json({ limit: "100kb" }));
-app.use(express.urlencoded({ extended: true, limit: "100kb" }));
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 // Health check routes
 app.get(["/health", "/api/health"], (req, res) => {

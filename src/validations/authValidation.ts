@@ -9,12 +9,30 @@ const schoolIdSchema = z
     message: "ID must be in format XX-XXXX (e.g., 24-1474) or AA-XXXXXXX (e.g., AB-1234567)",
   });
 
+// Philippine mobile number validation
+// Valid formats: 09XXXXXXXXX (11 digits) or +639XXXXXXXXX (12 digits after +63)
+const philippinePhoneSchema = z
+  .string()
+  .trim()
+  .refine(
+    (val) => {
+      if (!val || val.trim() === "") return true; // Optional field
+      const clean = val.replace(/[\s-]/g, "");
+      return /^(09|\+639)\d{9}$/.test(clean);
+    },
+    {
+      message: "Phone number must be a valid Philippine mobile number (e.g., 09123456789 or +639123456789)",
+    }
+  )
+  .nullable()
+  .optional();
+
 export const registerSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required"),
   lastName: z.string().trim().min(1, "Last name is required"),
   email: z.string().trim().email("Invalid email format"),
   schoolId: schoolIdSchema,
-  phone: z.string().trim().optional(),
+  phone: philippinePhoneSchema,
   password: z
     .string()
     .min(8, "Password must be at least 8 characters long")
@@ -46,7 +64,7 @@ export const adminRegisterSchema = z.object({
   lastName: z.string().trim().min(1, "Last name is required"),
   email: z.string().trim().email("Invalid email address"),
   schoolId: schoolIdSchema,
-  phone: z.string().trim().optional(),
+  phone: philippinePhoneSchema,
   password: z.string().min(6, "Password must be at least 6 characters"),
   role: z.enum(["GUARD", "ADMIN"]),
 });

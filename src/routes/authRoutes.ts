@@ -292,6 +292,8 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
         role: user.role,
         accountType: user.accountType,
         accountStatus: user.accountStatus,
+        avatar: user.avatar,
+        createdAt: user.createdAt,
       },
     });
   } catch (error) {
@@ -358,7 +360,7 @@ router.get("/me", requireAuth, async (req, res, next) => {
 });
 
 // ==========================================
-// 3.1. UPDATE USER PROFILE (PATCH /api/users/profile) - Protected
+// 3.1. UPDATE USER PROFILE (PATCH/PUT /api/users/profile) - Protected
 // ==========================================
 router.patch("/users/profile", requireAuth, async (req, res, next) => {
   try {
@@ -367,8 +369,19 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
     // Security: Build update data - only allow these fields
     const updateData: { phone?: string | null; firstName?: string; lastName?: string; avatar?: string | null } = {};
 
-    if (phone !== undefined) {
-      updateData.phone = phone || null;
+    // Validate phone number if provided
+    if (phone !== undefined && phone !== null && phone.trim() !== "") {
+      const cleanPhone = phone.trim().replace(/[\s-]/g, "");
+      const isValid = /^(09|\+639)\d{9}$/.test(cleanPhone);
+      if (!isValid) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid Philippine mobile number. Must start with 09 or +639 followed by 9 digits (e.g., 09123456789).",
+        });
+      }
+      updateData.phone = phone.trim();
+    } else if (phone === "" || phone === null) {
+      updateData.phone = null;
     }
 
     if (avatar !== undefined) {

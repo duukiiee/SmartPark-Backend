@@ -28,25 +28,25 @@ router.post("/register", authLimiter, async (req, res, next) => {
     const { firstName, lastName, email, schoolId, phone, password } = validation.data;
     const normalizedEmail = email.toLowerCase();
 
-    // 2. Check if email already exists in Supabase
-    const existingEmail = await db.user.findUnique({
+    // 2. Check if an ACTIVE, SUSPENDED, or LOCKED account already exists with this email
+    const existingEmailUser = await db.user.findUnique({
       where: { email: normalizedEmail },
     });
-    if (existingEmail) {
+    if (existingEmailUser && existingEmailUser.accountStatus !== "PendingVerification") {
       return res.status(409).json({
         success: false,
-        message: "An account with this email address already exists",
+        message: "An active account with this email address already exists. Please sign in instead.",
       });
     }
 
-    // 3. Check if school ID already exists in Supabase
-    const existingSchoolId = await db.user.findUnique({
+    // 3. Check if an ACTIVE, SUSPENDED, or LOCKED account already exists with this school ID
+    const existingSchoolIdUser = await db.user.findUnique({
       where: { schoolId },
     });
-    if (existingSchoolId) {
+    if (existingSchoolIdUser && existingSchoolIdUser.accountStatus !== "PendingVerification") {
       return res.status(409).json({
         success: false,
-        message: "An account with this Student/Employee ID already exists",
+        message: "An active account with this Student/Employee ID already exists. Please sign in instead.",
       });
     }
 
@@ -67,7 +67,19 @@ router.post("/register", authLimiter, async (req, res, next) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // 6. Save to Supabase PostgreSQL via Prisma 7 Client
+    // 6. Clean up any previous unverified (PendingVerification) records with this email or school ID
+    // This allows the user to re-register cleanly if they refreshed, closed the tab, or need a new OTP
+    await db.user.deleteMany({
+      where: {
+        accountStatus: "PendingVerification",
+        OR: [
+          { email: normalizedEmail },
+          { schoolId: schoolId },
+        ],
+      },
+    });
+
+    // 7. Save to database via Prisma Client
     // Public registration ALWAYS gets USER role - never trust frontend role
     const newUser = await db.user.create({
       data: {
@@ -352,6 +364,7 @@ router.get("/me", requireAuth, async (req, res, next) => {
         role: user.role,
         accountStatus: user.accountStatus,
         createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
       },
     });
   } catch (error) {
@@ -428,10 +441,28 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
       },
     });
 
+    // Re-issue updated JWT token with fresh user information
+    const jwtSecret = process.env.JWT_SECRET;
+    let token: string | undefined;
+    if (jwtSecret) {
+      token = jwt.sign(
+        {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          role: updatedUser.role,
+          accountType: updatedUser.accountType,
+          schoolId: updatedUser.schoolId,
+        },
+        jwtSecret,
+        { expiresIn: "7d" }
+      );
+    }
+
     return res.status(200).json({
       success: true,
       message: "Profile updated successfully",
       user: updatedUser,
+      token,
     });
   } catch (error) {
     next(error);
@@ -794,6 +825,34 @@ router.post("/change-password", requireAuth, async (req, res, next) => {
       });
     }
 
+    if (!/[A-Z]/.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must contain at least one uppercase letter (A-Z)",
+      });
+    }
+
+    if (!/[a-z]/.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must contain at least one lowercase letter (a-z)",
+      });
+    }
+
+    if (!/[0-9]/.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: "New password must contain at least one number (0-9)",
+      });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "New password cannot be the same as your current password",
+      });
+    }
+
     const user = await db.user.findUnique({
       where: { id: req.user!.id },
     });
@@ -816,14 +875,16 @@ router.post("/change-password", requireAuth, async (req, res, next) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
 
-    await db.user.update({
+    const updatedUser = await db.user.update({
       where: { id: user.id },
       data: { password: hashedPassword },
+      select: { updatedAt: true },
     });
 
     return res.status(200).json({
       success: true,
       message: "Password changed successfully",
+      updatedAt: updatedUser.updatedAt,
     });
   } catch (error) {
     next(error);

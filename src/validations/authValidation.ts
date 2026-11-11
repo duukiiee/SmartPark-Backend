@@ -18,7 +18,7 @@ const philippinePhoneSchema = z
     (val) => {
       if (!val || val.trim() === "") return true; // Optional field
       const clean = val.replace(/[\s-]/g, "");
-      return /^(09|\+639)\d{9}$/.test(clean);
+      return /^(09|\+639|9)\d{9}$/.test(clean);
     },
     {
       message: "Phone number must be a valid Philippine mobile number (e.g., 09123456789 or +639123456789)",

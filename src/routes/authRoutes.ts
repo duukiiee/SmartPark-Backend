@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
@@ -7,6 +7,16 @@ import { loginRateLimiter, authLimiter, checkAccountLockout, recordFailedLogin, 
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
 import { registerSchema, loginSchema, adminRegisterSchema, forgotPasswordSchema, verifyOtpSchema, resetPasswordSchema, verifyEmailSchema, resendVerificationSchema } from "../validations/authValidation.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../utils/email.js";
+
+// Helper to ensure all Philippine mobile numbers are normalized to 09XXXXXXXXX in the database
+function normalizeToPhilippine09(phoneStr?: string | null): string | null {
+  if (!phoneStr || !phoneStr.trim()) return null;
+  let clean = phoneStr.trim().replace(/[\s-]/g, "");
+  if (clean.startsWith("+63")) clean = "0" + clean.slice(3);
+  else if (clean.startsWith("63")) clean = "0" + clean.slice(2);
+  else if (!clean.startsWith("0") && clean.startsWith("9")) clean = "0" + clean;
+  return clean;
+}
 
 const router = Router();
 
@@ -87,7 +97,7 @@ router.post("/register", authLimiter, async (req, res, next) => {
         lastName,
         email: normalizedEmail,
         schoolId,
-        phone: phone || null,
+        phone: normalizeToPhilippine09(phone),
         password: hashedPassword,
         role: "USER",
         accountType,
@@ -385,14 +395,14 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
     // Validate phone number if provided
     if (phone !== undefined && phone !== null && phone.trim() !== "") {
       const cleanPhone = phone.trim().replace(/[\s-]/g, "");
-      const isValid = /^(09|\+639)\d{9}$/.test(cleanPhone);
+      const isValid = /^(09|\+639|9)\d{9}$/.test(cleanPhone);
       if (!isValid) {
         return res.status(400).json({
           success: false,
           message: "Invalid Philippine mobile number. Must start with 09 or +639 followed by 9 digits (e.g., 09123456789).",
         });
       }
-      updateData.phone = phone.trim();
+      updateData.phone = normalizeToPhilippine09(cleanPhone);
     } else if (phone === "" || phone === null) {
       updateData.phone = null;
     }
@@ -524,7 +534,7 @@ router.post("/admin-register", requireAuth, requireRole("ADMIN", "SUPER_ADMIN"),
         lastName,
         email: normalizedEmail,
         schoolId,
-        phone: phone || null,
+        phone: normalizeToPhilippine09(phone),
         password: hashedPassword,
         role: role,
         accountStatus: "Active",

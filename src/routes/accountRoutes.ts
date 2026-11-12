@@ -80,6 +80,12 @@ router.get("/accounts", async (req, res, next) => {
     const accounts = rawAccounts.map((u) => ({
       ...u,
       name: `${u.firstName} ${u.lastName}`,
+      status: u.accountStatus,
+      studentId: u.schoolId,
+      employeeId: u.schoolId,
+      phoneNumber: u.phone,
+      dateCreated: u.createdAt,
+      lastUpdated: u.updatedAt,
     }));
 
     const totalPages = Math.ceil(total / limit) || 1;
@@ -139,6 +145,12 @@ router.get("/accounts/:id", async (req, res, next) => {
       account: {
         ...user,
         name: `${user.firstName} ${user.lastName}`,
+        status: user.accountStatus,
+        studentId: user.schoolId,
+        employeeId: user.schoolId,
+        phoneNumber: user.phone,
+        dateCreated: user.createdAt,
+        lastUpdated: user.updatedAt,
       },
     });
   } catch (error) {

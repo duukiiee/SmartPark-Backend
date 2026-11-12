@@ -2,6 +2,7 @@ import express from "express";
 import helmet from "helmet";
 import { corsconf } from "./config/cors.js";
 import authRoutes from "./routes/authRoutes.js";
+import accountRoutes from "./routes/accountRoutes.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 import { db } from "./prisma/db.js";
 
@@ -30,6 +31,7 @@ app.get(["/health", "/api/health"], (req, res) => {
 
 // API Routes
 app.use("/api", authRoutes);
+app.use("/api/admin", accountRoutes);
 
 // Fallback JSON 404 handler for unknown endpoints
 app.use((req, res) => {

@@ -245,12 +245,34 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       }
     }
 
-    // 5. Check Account Status (Active, Suspended, Locked, PendingVerification) AFTER password verification
-    if (user.accountStatus === "Suspended") {
+    // 5. Check Account Status (Active, Suspended, Deactivated, Inactive, Locked, PendingVerification) AFTER password verification
+    if (user.accountStatus === "Suspended" && user.suspendedUntil) {
+      if (new Date() > new Date(user.suspendedUntil)) {
+        user = await db.user.update({
+          where: { id: user.id },
+          data: { accountStatus: "Active", suspendedUntil: null, suspensionReason: null },
+        });
+      } else {
+        return res.status(403).json({
+          success: false,
+          status: "Suspended",
+          message: `Your account is suspended until ${user.suspendedUntil.toLocaleDateString()} due to: ${user.suspensionReason || "N/A"}. Please contact the admin office.`,
+        });
+      }
+    } else if (user.accountStatus === "Suspended") {
+        // Fallback if no suspendedUntil
+        return res.status(403).json({
+          success: false,
+          status: "Suspended",
+          message: "Your account has been suspended. Please contact the admin office.",
+        });
+    }
+
+    if (user.accountStatus === "Deactivated") {
       return res.status(403).json({
         success: false,
-        status: "Suspended",
-        message: "Your account has been suspended. Please submit an appeal for review.",
+        status: "Deactivated",
+        message: "Your account has been permanently deactivated. Access is denied.",
       });
     }
 

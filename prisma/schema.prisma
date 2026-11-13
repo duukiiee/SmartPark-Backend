@@ -17,7 +17,9 @@ model User {
   password      String
   role          String    @default("USER")
   accountType   String    @default("STUDENT")
-  accountStatus String    @default("Active")
+  accountStatus String    @default("Active") // "Active", "Inactive", "Suspended", "Deactivated"
+  suspendedUntil DateTime?
+  suspensionReason String?
   failedAttempts Int      @default(0)
   lockedUntil   DateTime?
   createdAt     DateTime  @default(now())

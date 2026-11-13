@@ -133,6 +133,8 @@ router.get("/accounts/:id", async (req, res, next) => {
         accountStatus: true,
         createdAt: true,
         updatedAt: true,
+        suspendedUntil: true,
+        suspensionReason: true,
       },
     });
 
@@ -151,6 +153,8 @@ router.get("/accounts/:id", async (req, res, next) => {
         phoneNumber: user.phone,
         dateCreated: user.createdAt,
         lastUpdated: user.updatedAt,
+        suspendedUntil: user.suspendedUntil,
+        suspensionReason: user.suspensionReason,
       },
     });
   } catch (error) {
@@ -177,6 +181,13 @@ router.patch("/accounts/:id", async (req, res, next) => {
     const currentUser = req.user!;
     const isRegularAdmin = currentUser.role?.toUpperCase() === "ADMIN";
     const targetRole = targetUser.role?.toUpperCase();
+
+    if (targetRole === "USER") {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. User profiles cannot be edited by administrators. Users manage their own profiles.",
+      });
+    }
 
     if (isRegularAdmin && (targetRole === "ADMIN" || targetRole === "SUPER_ADMIN")) {
       return res.status(403).json({
@@ -260,6 +271,13 @@ router.patch("/accounts/:id/status", async (req, res, next) => {
     const isRegularAdmin = currentUser.role?.toUpperCase() === "ADMIN";
     const targetRole = targetUser.role?.toUpperCase();
 
+    if (targetRole === "USER") {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. User profiles cannot be edited by administrators. Users manage their own profiles.",
+      });
+    }
+
     if (isRegularAdmin && (targetRole === "ADMIN" || targetRole === "SUPER_ADMIN")) {
       return res.status(403).json({
         success: false,
@@ -297,6 +315,43 @@ router.patch("/accounts/:id/status", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+
+// 5. POST /api/admin/accounts/:id/suspend
+router.post("/accounts/:id/suspend", async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { durationDays, suspendedUntil, reason } = req.body;
+    if (!reason) return res.status(400).json({ success: false, message: "Reason is required" });
+    let suspensionDate = suspendedUntil ? new Date(suspendedUntil) : new Date(Date.now() + (durationDays || 0) * 24 * 60 * 60 * 1000);
+    const updatedUser = await db.user.update({
+      where: { id },
+      data: { accountStatus: "Suspended", suspendedUntil: suspensionDate, suspensionReason: reason.trim() },
+    });
+    return res.status(200).json({ success: true, account: updatedUser });
+  } catch (error) { next(error); }
+});
+
+// 6. POST /api/admin/accounts/:id/deactivate
+router.post("/accounts/:id/deactivate", async (req, res, next) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const updatedUser = await db.user.update({ where: { id }, data: { accountStatus: "Deactivated" } });
+        return res.status(200).json({ success: true, account: updatedUser });
+    } catch (error) { next(error); }
+});
+
+// 7. POST /api/admin/accounts/:id/set-status
+router.post("/accounts/:id/set-status", async (req, res, next) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const { status } = req.body;
+        const data: any = { accountStatus: status };
+        if (status === "Active") { data.suspendedUntil = null; data.suspensionReason = null; }
+        const updatedUser = await db.user.update({ where: { id }, data });
+        return res.status(200).json({ success: true, account: updatedUser });
+    } catch (error) { next(error); }
 });
 
 export default router;

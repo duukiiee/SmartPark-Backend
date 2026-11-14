@@ -25,7 +25,30 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  vehicles      Vehicle[]
+
   @@map("user")
+}
+
+model Vehicle {
+  id                 Int       @id @default(autoincrement())
+  userId             Int
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type               String    // "Car" | "Motorcycle"
+  plateNumber        String    @unique
+  brand              String
+  model              String
+  color              String
+  year               String
+  status             String    @default("Pending") // "Pending", "Approved", "Rejected", "Inactive"
+  rejectionReason    String?
+  qrCode             String?   @unique
+  registrationSource String    @default("Online")
+  approvedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@map("vehicle")
 }
 
 model RevokedToken {

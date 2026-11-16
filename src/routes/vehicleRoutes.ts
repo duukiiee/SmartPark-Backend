@@ -637,7 +637,7 @@ adminVehicleRoutes.patch("/:id/status", async (req, res, next) => {
   }
 });
 
-// 7. GET /api/admin/vehicles/:id/history - Get vehicle parking history with search, filters, pagination & auto-seeding
+// 7. GET /api/admin/vehicles/:id/history - Get vehicle parking history with search, filters & pagination
 adminVehicleRoutes.get("/:id/history", async (req, res, next) => {
   try {
     const vehicleId = parseInt(req.params.id, 10);
@@ -653,44 +653,15 @@ adminVehicleRoutes.get("/:id/history", async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Vehicle not found" });
     }
 
-    const existingLogsCount = await db.parkingLog.count({ where: { vehicleId } });
-    if (existingLogsCount === 0) {
-      const now = new Date();
-      await db.parkingLog.createMany({
-        data: [
-          {
-            vehicleId,
-            entryTime: new Date(now.getTime() - 172800000),
-            exitTime: new Date(now.getTime() - 150300000),
-            duration: "6h 15m",
-            status: "Complete",
-            guardName: "Guard Santos",
-          },
-          {
-            vehicleId,
-            entryTime: new Date(now.getTime() - 86400000),
-            exitTime: null,
-            duration: null,
-            status: "Currently Parked",
-            guardName: "Guard Santos",
-          },
-          {
-            vehicleId,
-            entryTime: new Date(now.getTime() - 259200000),
-            exitTime: new Date(now.getTime() - 236720000),
-            duration: "6h 18m",
-            status: "Complete",
-            guardName: "Guard Santos",
-          },
-          {
-            vehicleId,
-            entryTime: new Date(now.getTime() - 345600000),
-            exitTime: new Date(now.getTime() - 333900000),
-            duration: "3h 15m",
-            status: "Complete",
-            guardName: "Guard Reyes",
-          },
-        ],
+    // If vehicle status is Pending, return empty history and purge any fake logs
+    if (vehicle.status === "Pending") {
+      await db.parkingLog.deleteMany({ where: { vehicleId } });
+      return res.status(200).json({
+        success: true,
+        isPending: true,
+        history: [],
+        availableDates: ["All Dates"],
+        pagination: { total: 0, page: 1, limit: 5, totalPages: 1 },
       });
     }
 
@@ -789,6 +760,7 @@ adminVehicleRoutes.get("/:id/history", async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
+      isPending: false,
       history: paginatedLogs,
       availableDates,
       pagination: {

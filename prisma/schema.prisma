@@ -48,7 +48,24 @@ model Vehicle {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
+  parkingLogs        ParkingLog[]
+
   @@map("vehicle")
+}
+
+model ParkingLog {
+  id           Int       @id @default(autoincrement())
+  vehicleId    Int
+  vehicle      Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  entryTime    DateTime  @default(now())
+  exitTime     DateTime?
+  duration     String?
+  status       String    @default("Currently Parked")
+  guardName    String    @default("Guard Santos")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("parking_log")
 }
 
 model RevokedToken {

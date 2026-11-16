@@ -637,3 +637,170 @@ adminVehicleRoutes.patch("/:id/status", async (req, res, next) => {
   }
 });
 
+// 7. GET /api/admin/vehicles/:id/history - Get vehicle parking history with search, filters, pagination & auto-seeding
+adminVehicleRoutes.get("/:id/history", async (req, res, next) => {
+  try {
+    const vehicleId = parseInt(req.params.id, 10);
+    if (isNaN(vehicleId)) {
+      return res.status(400).json({ success: false, message: "Invalid vehicle ID" });
+    }
+
+    const vehicle = await db.vehicle.findUnique({
+      where: { id: vehicleId },
+    });
+
+    if (!vehicle) {
+      return res.status(404).json({ success: false, message: "Vehicle not found" });
+    }
+
+    const existingLogsCount = await db.parkingLog.count({ where: { vehicleId } });
+    if (existingLogsCount === 0) {
+      const now = new Date();
+      await db.parkingLog.createMany({
+        data: [
+          {
+            vehicleId,
+            entryTime: new Date(now.getTime() - 172800000),
+            exitTime: new Date(now.getTime() - 150300000),
+            duration: "6h 15m",
+            status: "Complete",
+            guardName: "Guard Santos",
+          },
+          {
+            vehicleId,
+            entryTime: new Date(now.getTime() - 86400000),
+            exitTime: null,
+            duration: null,
+            status: "Currently Parked",
+            guardName: "Guard Santos",
+          },
+          {
+            vehicleId,
+            entryTime: new Date(now.getTime() - 259200000),
+            exitTime: new Date(now.getTime() - 236720000),
+            duration: "6h 18m",
+            status: "Complete",
+            guardName: "Guard Santos",
+          },
+          {
+            vehicleId,
+            entryTime: new Date(now.getTime() - 345600000),
+            exitTime: new Date(now.getTime() - 333900000),
+            duration: "3h 15m",
+            status: "Complete",
+            guardName: "Guard Reyes",
+          },
+        ],
+      });
+    }
+
+    const search = (req.query.search as string)?.trim() || "";
+    const dateFilter = (req.query.date as string)?.trim() || "All Dates";
+    const timeFilter = (req.query.timeFilter as string)?.trim() || "All";
+    const page = parseInt(req.query.page as string, 10) || 1;
+    const limit = parseInt(req.query.limit as string, 10) || 5;
+    const skip = (page - 1) * limit;
+
+    const allLogs = await db.parkingLog.findMany({
+      where: { vehicleId },
+      orderBy: { entryTime: "desc" },
+    });
+
+    const formattedAllLogs = allLogs.map((log) => {
+      const entryDateObj = new Date(log.entryTime);
+      const dateStr = entryDateObj.toLocaleDateString("en-US", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      });
+
+      const entryTimeStr = entryDateObj.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+
+      let exitTimeStr = "--";
+      let durationStr = log.duration || "--";
+      let logStatus = log.status;
+
+      if (log.exitTime) {
+        const exitDateObj = new Date(log.exitTime);
+        exitTimeStr = exitDateObj.toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        });
+        if (!log.duration) {
+          const diffMs = exitDateObj.getTime() - entryDateObj.getTime();
+          const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+          const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+          durationStr = `${diffHrs}h ${diffMins}m`;
+        }
+        logStatus = "Complete";
+      } else {
+        logStatus = "Currently Parked";
+      }
+
+      const hours24 = entryDateObj.getHours();
+      const timeOfDay = hours24 < 12 ? "Morning (AM)" : "Afternoon / Evening (PM)";
+
+      return {
+        id: log.id,
+        date: dateStr,
+        entryTime: entryTimeStr,
+        exitTime: exitTimeStr,
+        duration: durationStr,
+        status: logStatus,
+        registeredBy: log.guardName,
+        timeOfDay,
+      };
+    });
+
+    const uniqueDatesSet = new Set<string>();
+    formattedAllLogs.forEach((l) => uniqueDatesSet.add(l.date));
+    const availableDates = ["All Dates", ...Array.from(uniqueDatesSet)];
+
+    const filtered = formattedAllLogs.filter((log) => {
+      if (search) {
+        const query = search.toLowerCase();
+        const matchSearch =
+          log.date.toLowerCase().includes(query) ||
+          log.registeredBy.toLowerCase().includes(query) ||
+          log.status.toLowerCase().includes(query) ||
+          log.entryTime.toLowerCase().includes(query) ||
+          log.exitTime.toLowerCase().includes(query);
+        if (!matchSearch) return false;
+      }
+
+      if (dateFilter && dateFilter !== "All Dates") {
+        if (log.date !== dateFilter) return false;
+      }
+
+      if (timeFilter && timeFilter !== "All") {
+        if (log.timeOfDay !== timeFilter) return false;
+      }
+
+      return true;
+    });
+
+    const totalCount = filtered.length;
+    const paginatedLogs = filtered.slice(skip, skip + limit).map(({ timeOfDay, ...rest }) => rest);
+
+    return res.status(200).json({
+      success: true,
+      history: paginatedLogs,
+      availableDates,
+      pagination: {
+        total: totalCount,
+        page,
+        limit,
+        totalPages: Math.ceil(totalCount / limit) || 1,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+

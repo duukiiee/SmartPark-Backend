@@ -26,6 +26,7 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   vehicles      Vehicle[]
+  incidents     Incident[]
 
   @@map("user")
 }
@@ -76,6 +77,31 @@ model ParkingSetting {
   updatedAt          DateTime @updatedAt
 
   @@map("parking_setting")
+}
+
+model Incident {
+  id              Int       @id @default(autoincrement())
+  referenceId     String    @unique
+  userId          Int?
+  user            User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  reporterName    String
+  reporterEmail   String?
+  reporterPhone   String?
+  vehicleType     String    // "Car" | "Motorcycle" | "Car (Sedan)"
+  plateNumber     String
+  model           String?
+  color           String?
+  reportType      String    // "Obstruction" | "Illegal Parking" | "Double parking" | "Blocking parking space" | "Minor Scratch"
+  description     String
+  evidenceImage   String?   @db.Text
+  status          String    @default("Pending") // "Pending", "Reviewed", "Rejected", "Unidentified"
+  rejectionReason String?
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("incident")
 }
 
 model RevokedToken {

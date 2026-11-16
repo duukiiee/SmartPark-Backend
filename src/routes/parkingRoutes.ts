@@ -33,23 +33,21 @@ adminParkingRoutes.get("/overview", async (req, res, next) => {
     const { carCapacity, motorcycleCapacity } = setting;
     const totalCapacity = carCapacity + motorcycleCapacity;
 
-    // Count currently parked vehicles (Only Approved vehicles)
+    // Count currently parked vehicles (physically occupying a parking space)
     const carParked = await db.parkingLog.count({
       where: {
-        status: "Currently Parked",
+        OR: [{ status: "Currently Parked" }, { exitTime: null }],
         vehicle: {
           type: "Car",
-          status: "Approved",
         },
       },
     });
 
     const motorcycleParked = await db.parkingLog.count({
       where: {
-        status: "Currently Parked",
+        OR: [{ status: "Currently Parked" }, { exitTime: null }],
         vehicle: {
           type: "Motorcycle",
-          status: "Approved",
         },
       },
     });
@@ -102,20 +100,18 @@ adminParkingRoutes.get("/capacity", async (req, res, next) => {
 
     const carParked = await db.parkingLog.count({
       where: {
-        status: "Currently Parked",
+        OR: [{ status: "Currently Parked" }, { exitTime: null }],
         vehicle: {
           type: "Car",
-          status: "Approved",
         },
       },
     });
 
     const motorcycleParked = await db.parkingLog.count({
       where: {
-        status: "Currently Parked",
+        OR: [{ status: "Currently Parked" }, { exitTime: null }],
         vehicle: {
           type: "Motorcycle",
-          status: "Approved",
         },
       },
     });
@@ -215,13 +211,8 @@ adminParkingRoutes.get("/history", async (req, res, next) => {
     const limit = parseInt(req.query.limit as string, 10) || 10;
     const skip = (page - 1) * limit;
 
-    // Fetch all logs for approved vehicles to calculate filters
+    // Fetch all parking logs to calculate filters
     const allLogs = await db.parkingLog.findMany({
-      where: {
-        vehicle: {
-          status: "Approved",
-        },
-      },
       include: {
         vehicle: {
           include: {
@@ -356,7 +347,6 @@ adminParkingRoutes.get("/analytics", async (req, res, next) => {
     const vehiclesEntering24h = await db.parkingLog.count({
       where: {
         entryTime: { gte: past24h },
-        vehicle: { status: "Approved" },
       },
     });
 
@@ -364,16 +354,15 @@ adminParkingRoutes.get("/analytics", async (req, res, next) => {
     const vehiclesExiting24h = await db.parkingLog.count({
       where: {
         exitTime: { gte: past24h },
-        vehicle: { status: "Approved" },
       },
     });
 
-    // Total registered approved vehicles
+    // Total registered vehicles
     const totalCarsRegistered = await db.vehicle.count({
-      where: { type: "Car", status: "Approved" },
+      where: { type: "Car" },
     });
     const totalMotorcyclesRegistered = await db.vehicle.count({
-      where: { type: "Motorcycle", status: "Approved" },
+      where: { type: "Motorcycle" },
     });
     const totalVehicles = totalCarsRegistered + totalMotorcyclesRegistered;
 
@@ -381,7 +370,6 @@ adminParkingRoutes.get("/analytics", async (req, res, next) => {
     const recentLogs = await db.parkingLog.findMany({
       where: {
         entryTime: { gte: past7Days },
-        vehicle: { status: "Approved" },
       },
       select: {
         entryTime: true,

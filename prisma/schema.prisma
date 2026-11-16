@@ -27,6 +27,7 @@ model User {
 
   vehicles      Vehicle[]
   incidents     Incident[]
+  notifications Notification[]
 
   @@map("user")
 }
@@ -132,4 +133,19 @@ model EmailVerificationOtp {
   createdAt DateTime @default(now())
 
   @@index([email])
+}
+
+model Notification {
+  id          Int       @id @default(autoincrement())
+  userId      Int?      // specific admin user, or null for broadcast to all admins
+  user        User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  description String
+  type        String    @default("alert") // "alert" | "update" | "warning"
+  link        String?   // target link (e.g. "/admin/incidents", "/admin/vehicles/registration")
+  read        Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("notification")
 }

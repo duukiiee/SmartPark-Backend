@@ -4,7 +4,8 @@ import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
 
 export const adminNotificationRoutes = Router();
 
-adminNotificationRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN"));
+// Allow Guards, Admins, and Super Admins
+adminNotificationRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN", "GUARD"));
 
 /**
  * Helper to format date & time nicely (e.g. "Nov 17, 7:42 AM")
@@ -20,14 +21,15 @@ function formatTime(date: Date): string {
 }
 
 /**
- * Auto-sync helper: creates notifications for pending incidents or vehicle registrations if they don't exist yet
+ * Auto-sync helper: creates notifications for pending incidents, vehicle registrations, approvals, or capacity warnings
  */
 async function syncSystemNotifications() {
   try {
-    // 1. Check pending incidents
+    // 1. Check pending incidents -> Alerts
     const pendingIncidents = await db.incident.findMany({
       where: { status: "Pending" },
       take: 5,
+      orderBy: { createdAt: "desc" },
     });
 
     for (const inc of pendingIncidents) {
@@ -41,7 +43,7 @@ async function syncSystemNotifications() {
         await db.notification.create({
           data: {
             title: `New Incident Report: ${inc.referenceId}`,
-            description: `${inc.reportType} reported for plate ${inc.plateNumber}. Waiting for admin review.`,
+            description: `${inc.reportType} reported for plate ${inc.plateNumber}. Waiting for security/admin review.`,
             type: "alert",
             link: `/admin/incidents/review/${inc.id}`,
             read: false,
@@ -51,10 +53,11 @@ async function syncSystemNotifications() {
       }
     }
 
-    // 2. Check pending vehicle registrations
+    // 2. Check pending vehicle registrations -> Updates
     const pendingVehicles = await db.vehicle.findMany({
       where: { status: "Pending" },
       take: 5,
+      orderBy: { createdAt: "desc" },
     });
 
     for (const veh of pendingVehicles) {
@@ -77,13 +80,70 @@ async function syncSystemNotifications() {
         });
       }
     }
+
+    // 3. Check recently approved vehicles -> Updates
+    const approvedVehicles = await db.vehicle.findMany({
+      where: { status: "Approved" },
+      take: 5,
+      orderBy: { updatedAt: "desc" },
+    });
+
+    for (const veh of approvedVehicles) {
+      const title = `Vehicle Pass Approved: ${veh.plateNumber}`;
+      const existing = await db.notification.findFirst({
+        where: { title },
+      });
+
+      if (!existing) {
+        await db.notification.create({
+          data: {
+            title,
+            description: `${veh.brand} ${veh.model} (${veh.plateNumber}) pass is approved and active for campus entry.`,
+            type: "update",
+            link: `/guard/registration`,
+            read: false,
+            createdAt: veh.approvedAt || veh.updatedAt || new Date(),
+          },
+        });
+      }
+    }
+
+    // 4. Check parking lot full capacity -> Warnings
+    const parkedCount = await db.parkingLog.count({
+      where: {
+        OR: [{ status: "Currently Parked" }, { exitTime: null }],
+      },
+    });
+
+    const setting = await db.parkingSetting.findFirst();
+    const totalCapacity = (setting?.carCapacity || 60) + (setting?.motorcycleCapacity || 40);
+
+    if (parkedCount >= totalCapacity) {
+      const title = "Parking Lot Is Full";
+      const existing = await db.notification.findFirst({
+        where: { title, read: false },
+      });
+
+      if (!existing) {
+        await db.notification.create({
+          data: {
+            title,
+            description: `Facility has reached full capacity (${parkedCount}/${totalCapacity}). Guard entries should be queued.`,
+            type: "warning",
+            link: `/guard/monitoring`,
+            read: false,
+            createdAt: new Date(),
+          },
+        });
+      }
+    }
   } catch (err) {
     console.error("Error auto-syncing system notifications:", err);
   }
 }
 
 /**
- * 1. GET /api/admin/notifications
+ * 1. GET /api/guard/notifications & /api/admin/notifications
  * Returns live notifications, unread count, and tabs filtering
  */
 adminNotificationRoutes.get("/", async (req, res, next) => {
@@ -124,15 +184,28 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
       }),
     ]);
 
-    const formattedNotifications = notificationsList.map((n) => ({
-      id: String(n.id),
-      title: n.title,
-      description: n.description,
-      time: formatTime(n.createdAt),
-      type: (n.type as "alert" | "warning" | "update") || "alert",
-      read: n.read,
-      link: n.link || null,
-    }));
+    const isGuard = req.user?.role === "GUARD";
+
+    const formattedNotifications = notificationsList.map((n) => {
+      let link = n.link || null;
+      if (isGuard) {
+        if (link?.includes("/vehicle") || link?.includes("/registration")) {
+          link = "/guard/registration";
+        } else {
+          link = "/guard/monitoring";
+        }
+      }
+
+      return {
+        id: String(n.id),
+        title: n.title,
+        description: n.description,
+        time: formatTime(n.createdAt),
+        type: (n.type as "alert" | "warning" | "update") || "alert",
+        read: n.read,
+        link,
+      };
+    });
 
     return res.status(200).json({
       success: true,
@@ -151,7 +224,7 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
 });
 
 /**
- * 2. PATCH /api/admin/notifications/:id/read
+ * 2. PATCH /api/guard/notifications/:id/read & /api/admin/notifications/:id/read
  * Mark a single notification as read
  */
 adminNotificationRoutes.patch("/:id/read", async (req, res, next) => {
@@ -180,7 +253,7 @@ adminNotificationRoutes.patch("/:id/read", async (req, res, next) => {
 });
 
 /**
- * 3. PATCH /api/admin/notifications/mark-all-read
+ * 3. PATCH /api/guard/notifications/mark-all-read & /api/admin/notifications/mark-all-read
  * Mark all notifications as read
  */
 adminNotificationRoutes.patch("/mark-all-read", async (req, res, next) => {
@@ -201,7 +274,7 @@ adminNotificationRoutes.patch("/mark-all-read", async (req, res, next) => {
 });
 
 /**
- * 4. DELETE /api/admin/notifications/:id
+ * 4. DELETE /api/guard/notifications/:id & /api/admin/notifications/:id
  * Delete a notification
  */
 adminNotificationRoutes.delete("/:id", async (req, res, next) => {

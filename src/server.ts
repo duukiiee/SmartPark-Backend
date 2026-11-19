@@ -48,6 +48,7 @@ app.use("/api/admin/access", adminAccessRoutes);
 app.use("/api/admin/notifications", adminNotificationRoutes);
 app.use("/api/admin/dashboard", adminDashboardRoutes);
 app.use("/api/guard", guardRoutes);
+app.use("/api/guard/notifications", adminNotificationRoutes);
 
 // Fallback JSON 404 handler for unknown endpoints
 app.use((req, res) => {

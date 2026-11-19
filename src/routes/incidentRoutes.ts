@@ -49,7 +49,7 @@ async function seedInitialIncidentsIfEmpty() {
 // ----------------------------------------------------
 // ADMIN ROUTES (/api/admin/incidents)
 // ----------------------------------------------------
-adminIncidentRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN"));
+adminIncidentRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN", "GUARD"));
 
 /**
  * 1. GET /api/admin/incidents

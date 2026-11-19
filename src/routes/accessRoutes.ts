@@ -4,7 +4,7 @@ import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
 
 export const adminAccessRoutes = Router();
 
-adminAccessRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN"));
+adminAccessRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN", "GUARD"));
 
 /**
  * Helper to format date & time nicely (e.g. "Nov 17, 7:42 AM")

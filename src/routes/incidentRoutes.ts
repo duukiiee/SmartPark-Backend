@@ -427,6 +427,22 @@ publicIncidentRoutes.post("/", async (req, res, next) => {
       },
     });
 
+    // Notify admins & guards about the new incident report
+    try {
+      await db.notification.create({
+        data: {
+          title: `New Incident: ${reportType}`,
+          description: `${vehicleType} (${plateNumber.trim().toUpperCase()}) reported by ${reporterName}: ${description?.slice(0, 75) || "Check incident details."}`,
+          type: "alert",
+          link: `/admin/incidents/review/${newIncident.id}`,
+          read: false,
+          createdAt: new Date(),
+        },
+      });
+    } catch (notifErr) {
+      console.error("Failed to emit incident notification:", notifErr);
+    }
+
     return res.status(201).json({
       success: true,
       message: "Incident report submitted successfully.",

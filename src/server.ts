@@ -10,6 +10,7 @@ import { adminAccessRoutes } from "./routes/accessRoutes.js";
 import { adminNotificationRoutes } from "./routes/notificationRoutes.js";
 import { adminDashboardRoutes } from "./routes/dashboardRoutes.js";
 import { guardRoutes } from "./routes/guardRoutes.js";
+import { studentRoutes } from "./routes/studentRoutes.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 import { db } from "./prisma/db.js";
 
@@ -49,6 +50,8 @@ app.use("/api/admin/notifications", adminNotificationRoutes);
 app.use("/api/admin/dashboard", adminDashboardRoutes);
 app.use("/api/guard", guardRoutes);
 app.use("/api/guard/notifications", adminNotificationRoutes);
+app.use("/api/student", studentRoutes);
+app.use("/api/parking", studentRoutes);
 
 // Fallback JSON 404 handler for unknown endpoints
 app.use((req, res) => {

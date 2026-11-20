@@ -312,7 +312,7 @@ guardRoutes.get("/dashboard", async (req, res, next) => {
         db.parkingSetting.findFirst(),
       ]);
 
-    const totalCapacity = (setting?.carCapacity || 60) + (setting?.motorcycleCapacity || 40);
+    const totalCapacity = setting ? (setting.carCapacity + setting.motorcycleCapacity) : 96;
 
     // Latest 10 activities (both entries and exits)
     const logs = await db.parkingLog.findMany({

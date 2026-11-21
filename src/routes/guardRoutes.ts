@@ -493,6 +493,24 @@ guardRoutes.post("/record-entry", async (req, res, next) => {
       });
     }
 
+    // Check parking capacity before recording entry
+    const [setting, currentlyInside] = await Promise.all([
+      db.parkingSetting.findFirst(),
+      db.parkingLog.count({
+        where: {
+          OR: [{ status: "Currently Parked" }, { exitTime: null }],
+        },
+      }),
+    ]);
+
+    const totalCapacity = setting ? (setting.carCapacity + setting.motorcycleCapacity) : 100;
+    if (currentlyInside >= totalCapacity) {
+      return res.status(400).json({
+        success: false,
+        message: "Parking lot is at full capacity. Entry denied.",
+      });
+    }
+
     // Resolve Guard Name from req.user
     let guardName = "Security Guard";
     if (req.user?.id) {
@@ -671,6 +689,82 @@ guardRoutes.get("/vehicles", async (req, res, next) => {
     return res.status(200).json({
       success: true,
       vehicles: filtered,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * 7. POST /api/guard/register-vehicle
+ * Registers a temporary visitor or unassigned vehicle at the gate
+ */
+guardRoutes.post("/register-vehicle", async (req, res, next) => {
+  try {
+    const { ownerName, vehicleType, plateNumber, model, color, idType, idNumber } = req.body;
+
+    if (!ownerName || !vehicleType || !plateNumber || !model) {
+      return res.status(400).json({
+        success: false,
+        message: "Owner name, vehicle type, plate number, and model are required.",
+      });
+    }
+
+    const normalizedPlate = plateNumber.trim().toUpperCase();
+
+    const existingVehicle = await db.vehicle.findUnique({
+      where: { plateNumber: normalizedPlate },
+    });
+
+    if (existingVehicle) {
+      return res.status(400).json({
+        success: false,
+        message: "Plate number is already registered in the system.",
+      });
+    }
+
+    // Find or create a default visitor user account for gate registrations
+    let visitorUser = await db.user.findFirst({
+      where: { email: "visitor@smartpark.local" },
+    });
+
+    if (!visitorUser) {
+      visitorUser = await db.user.create({
+        data: {
+          firstName: "Gate",
+          lastName: "Visitor",
+          email: "visitor@smartpark.local",
+          schoolId: "VISITOR-001",
+          password: "NOPASSWORD_GATE_VISITOR",
+          role: "USER",
+          accountType: "VISITOR",
+          accountStatus: "Active",
+        },
+      });
+    }
+
+    const qrCode = `SP-${normalizedPlate.replace(/[^A-Z0-9]/g, "")}-${Date.now()}`;
+
+    const newVehicle = await db.vehicle.create({
+      data: {
+        userId: visitorUser.id,
+        type: vehicleType.trim(),
+        plateNumber: normalizedPlate,
+        brand: model.split(" ")[0] || "Vehicle",
+        model: model.trim(),
+        color: color ? color.trim() : "Standard",
+        year: "2026",
+        status: "Approved",
+        approvedAt: new Date(),
+        qrCode,
+        registrationSource: "Gate",
+      },
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Gate registration successful.",
+      vehicle: newVehicle,
     });
   } catch (err) {
     next(err);

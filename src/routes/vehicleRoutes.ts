@@ -14,33 +14,10 @@ studentVehicleRoutes.use(requireAuth);
 studentVehicleRoutes.get("/my-vehicles", async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    let vehicles = await db.vehicle.findMany({
+    const vehicles = await db.vehicle.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
     });
-
-    // Auto-generate QR code and ensure Approved status for any unassigned vehicles
-    const needsQr = vehicles.filter((v) => !v.qrCode || v.status === "Pending");
-    if (needsQr.length > 0) {
-      await Promise.all(
-        needsQr.map((v) => {
-          const qrCode = v.qrCode || `SP-${v.plateNumber.replace(/[^A-Z0-9]/g, "")}-${v.id}`;
-          return db.vehicle.update({
-            where: { id: v.id },
-            data: {
-              qrCode,
-              status: "Approved",
-              approvedAt: v.approvedAt || new Date(),
-            },
-          });
-        })
-      );
-
-      vehicles = await db.vehicle.findMany({
-        where: { userId },
-        orderBy: { createdAt: "desc" },
-      });
-    }
 
     return res.status(200).json({
       success: true,
@@ -51,7 +28,7 @@ studentVehicleRoutes.get("/my-vehicles", async (req, res, next) => {
   }
 });
 
-// 2. POST /api/vehicles - Register a vehicle with immediate QR generation
+// 2. POST /api/vehicles - Register a vehicle requiring admin approval
 studentVehicleRoutes.post("/", async (req, res, next) => {
   try {
     const userId = req.user!.id;
@@ -78,8 +55,6 @@ studentVehicleRoutes.post("/", async (req, res, next) => {
       });
     }
 
-    const qrCode = `SP-${normalizedPlate.replace(/[^A-Z0-9]/g, "")}-${Date.now()}`;
-
     const newVehicle = await db.vehicle.create({
       data: {
         userId,
@@ -89,9 +64,8 @@ studentVehicleRoutes.post("/", async (req, res, next) => {
         model: model.trim(),
         color: color.trim(),
         year: year.toString().trim(),
-        status: "Approved",
-        approvedAt: new Date(),
-        qrCode,
+        status: "Pending",
+        qrCode: null,
         registrationSource: "Online",
       },
     });
@@ -101,8 +75,8 @@ studentVehicleRoutes.post("/", async (req, res, next) => {
     const ownerName = user ? `${user.firstName} ${user.lastName}` : "Student";
     await db.notification.create({
       data: {
-        title: "New Vehicle Registered",
-        description: `${newVehicle.brand} ${newVehicle.model} (${newVehicle.plateNumber}) registered by ${ownerName}. Digital QR pass issued.`,
+        title: "New Vehicle Registration",
+        description: `${newVehicle.brand} ${newVehicle.model} (${newVehicle.plateNumber}) registered by ${ownerName}. Pending admin approval.`,
         type: "update",
         link: `/admin/vehicles`,
         read: false,
@@ -111,7 +85,7 @@ studentVehicleRoutes.post("/", async (req, res, next) => {
 
     return res.status(201).json({
       success: true,
-      message: "Vehicle registered successfully and QR pass generated",
+      message: "Vehicle registered successfully and is pending administrator approval.",
       vehicle: newVehicle,
     });
   } catch (error) {
@@ -223,7 +197,7 @@ studentVehicleRoutes.post("/:id/deactivate", async (req, res, next) => {
   }
 });
 
-// 5. GET /api/vehicles/:id/qr - Get vehicle QR code pass
+// 5. GET /api/vehicles/:id/qr - Get vehicle QR code pass (Requires Approved status)
 studentVehicleRoutes.get("/:id/qr", async (req, res, next) => {
   try {
     const userId = req.user!.id;
@@ -233,7 +207,7 @@ studentVehicleRoutes.get("/:id/qr", async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Invalid vehicle ID" });
     }
 
-    let vehicle = await db.vehicle.findUnique({
+    const vehicle = await db.vehicle.findUnique({
       where: { id: vehicleId },
     });
 
@@ -244,15 +218,11 @@ studentVehicleRoutes.get("/:id/qr", async (req, res, next) => {
       });
     }
 
-    if (!vehicle.qrCode || vehicle.status !== "Approved") {
-      const qrCode = vehicle.qrCode || `SP-${vehicle.plateNumber.replace(/[^A-Z0-9]/g, "")}-${Date.now()}`;
-      vehicle = await db.vehicle.update({
-        where: { id: vehicleId },
-        data: {
-          qrCode,
-          status: "Approved",
-          approvedAt: vehicle.approvedAt || new Date(),
-        },
+    if (vehicle.status !== "Approved" || !vehicle.qrCode) {
+      return res.status(403).json({
+        success: false,
+        message: "Vehicle is not approved yet. QR code is only available for approved vehicles.",
+        status: vehicle.status,
       });
     }
 
@@ -267,7 +237,7 @@ studentVehicleRoutes.get("/:id/qr", async (req, res, next) => {
   }
 });
 
-// 6. POST /api/vehicles/:id/generate-qr - Generate or refresh vehicle QR code
+// 6. POST /api/vehicles/:id/generate-qr - Get vehicle QR code pass (Requires Approved status)
 studentVehicleRoutes.post("/:id/generate-qr", async (req, res, next) => {
   try {
     const userId = req.user!.id;
@@ -288,21 +258,19 @@ studentVehicleRoutes.post("/:id/generate-qr", async (req, res, next) => {
       });
     }
 
-    const qrToken = `SP-${vehicle.plateNumber.replace(/[^A-Z0-9]/g, "")}-${Date.now()}`;
-    const updated = await db.vehicle.update({
-      where: { id: vehicleId },
-      data: {
-        qrCode: qrToken,
-        status: "Approved",
-        approvedAt: vehicle.approvedAt || new Date(),
-      },
-    });
+    if (vehicle.status !== "Approved" || !vehicle.qrCode) {
+      return res.status(403).json({
+        success: false,
+        message: "Cannot generate QR code for unapproved vehicle. Please wait for admin approval.",
+        status: vehicle.status,
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: "QR pass generated successfully",
-      qrCode: qrToken,
-      vehicle: updated,
+      message: "QR pass retrieved successfully",
+      qrCode: vehicle.qrCode,
+      vehicle,
     });
   } catch (error) {
     next(error);
@@ -740,9 +708,8 @@ adminVehicleRoutes.get("/:id/history", async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Vehicle not found" });
     }
 
-    // If vehicle status is Pending, return empty history and purge any fake logs
+    // If vehicle status is Pending, return empty history (read-only; no logs are modified)
     if (vehicle.status === "Pending") {
-      await db.parkingLog.deleteMany({ where: { vehicleId } });
       return res.status(200).json({
         success: true,
         isPending: true,

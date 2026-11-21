@@ -405,27 +405,49 @@ publicIncidentRoutes.post("/", async (req, res, next) => {
 
     const reporterName = reporter ? `${reporter.firstName} ${reporter.lastName}` : "Anonymous Reporter";
 
-    // Generate reference ID like INC-2026-XXXX
-    const randomSuffix = Math.floor(100 + Math.random() * 900);
-    const referenceId = `INC-2026-${randomSuffix}`;
+    // Generate unique reference ID like INC-2026-XXXXXX with retry on collision
+    let referenceId = "";
+    let created = false;
+    let newIncident;
 
-    const newIncident = await db.incident.create({
-      data: {
-        referenceId,
-        userId,
-        reporterName,
-        reporterEmail: reporter?.email || null,
-        reporterPhone: reporter?.phone || null,
-        vehicleType,
-        color: color || "--",
-        model: model || "--",
-        plateNumber: plateNumber.trim().toUpperCase(),
-        reportType,
-        description: description || "No additional description provided.",
-        evidenceImage: evidenceImage || null,
-        status: "Pending",
-      },
-    });
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const randomSuffix = Math.floor(100000 + Math.random() * 900000);
+      referenceId = `INC-2026-${randomSuffix}`;
+
+      try {
+        newIncident = await db.incident.create({
+          data: {
+            referenceId,
+            userId,
+            reporterName,
+            reporterEmail: reporter?.email || null,
+            reporterPhone: reporter?.phone || null,
+            vehicleType,
+            color: color || "--",
+            model: model || "--",
+            plateNumber: plateNumber.trim().toUpperCase(),
+            reportType,
+            description: description || "No additional description provided.",
+            evidenceImage: evidenceImage || null,
+            status: "Pending",
+          },
+        });
+        created = true;
+        break;
+      } catch (err: any) {
+        if (err.code === "P2002" && attempt < 4) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!created || !newIncident) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate unique incident reference ID. Please try again.",
+      });
+    }
 
     // Notify admins & guards about the new incident report
     try {

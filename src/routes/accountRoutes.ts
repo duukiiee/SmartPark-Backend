@@ -12,6 +12,16 @@ function normalizeToPhilippine09(phoneStr?: string | null): string | null {
   return clean;
 }
 
+// Canonical account status values. Must match the casing checked in authMiddleware.ts
+const ACCOUNT_STATUSES = ["Active", "Inactive", "Suspended", "Deactivated", "Locked"];
+
+// Normalizes incoming status casing (e.g. "ACTIVE" -> "Active"); returns null if unknown
+function normalizeAccountStatus(status: unknown): string | null {
+  if (typeof status !== "string") return null;
+  const match = ACCOUNT_STATUSES.find((s) => s.toLowerCase() === status.trim().toLowerCase());
+  return match ?? null;
+}
+
 const router = Router();
 
 // Protect all account routes with requireAuth and requireRole ADMIN / SUPER_ADMIN
@@ -212,7 +222,13 @@ router.patch("/accounts/:id", async (req, res, next) => {
     if (schoolId !== undefined) updateData.schoolId = schoolId.trim();
     if (phone !== undefined) updateData.phone = normalizeToPhilippine09(phone);
     if (role !== undefined) updateData.role = role.toUpperCase();
-    if (accountStatus !== undefined) updateData.accountStatus = accountStatus;
+    if (accountStatus !== undefined) {
+      const canonicalStatus = normalizeAccountStatus(accountStatus);
+      if (!canonicalStatus) {
+        return res.status(400).json({ success: false, message: "Invalid account status" });
+      }
+      updateData.accountStatus = canonicalStatus;
+    }
 
     const updatedUser = await db.user.update({
       where: { id },
@@ -254,9 +270,14 @@ router.patch("/accounts/:id/status", async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Invalid account ID" });
     }
 
-    const { status } = req.body;
-    if (!status) {
+    const { status: rawStatus } = req.body;
+    if (!rawStatus) {
       return res.status(400).json({ success: false, message: "Status is required" });
+    }
+
+    const status = normalizeAccountStatus(rawStatus);
+    if (!status) {
+      return res.status(400).json({ success: false, message: "Invalid account status" });
     }
 
     const targetUser = await db.user.findUnique({
@@ -346,7 +367,8 @@ router.post("/accounts/:id/deactivate", async (req, res, next) => {
 router.post("/accounts/:id/set-status", async (req, res, next) => {
     try {
         const id = parseInt(req.params.id, 10);
-        const { status } = req.body;
+        const status = normalizeAccountStatus(req.body.status);
+        if (!status) return res.status(400).json({ success: false, message: "Invalid account status" });
         const data: any = { accountStatus: status };
         if (status === "Active") { data.suspendedUntil = null; data.suspensionReason = null; }
         const updatedUser = await db.user.update({ where: { id }, data });

@@ -759,7 +759,7 @@ router.post("/reset-password", authLimiter, async (req, res, next) => {
       });
     }
 
-    const { resetToken, password } = validation.data;
+    const { resetToken, password, logoutOtherDevices } = validation.data;
 
     // Verify and decode resetToken
     let decoded: { email: string; purpose: string; exp?: number } | null = null;

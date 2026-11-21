@@ -451,6 +451,7 @@ guardRoutes.post("/scan", async (req, res, next) => {
         ownerName: `${vehicle.user.firstName} ${vehicle.user.lastName}`,
         schoolId: vehicle.user.schoolId,
         role: vehicle.user.role,
+        photo: vehicle.photo,
       },
       isCurrentlyParked: !!activeLog,
       activeLog: activeLog
@@ -701,7 +702,7 @@ guardRoutes.get("/vehicles", async (req, res, next) => {
  */
 guardRoutes.post("/register-vehicle", async (req, res, next) => {
   try {
-    const { ownerName, vehicleType, plateNumber, model, color, idType, idNumber } = req.body;
+    const { ownerName, vehicleType, plateNumber, brand, model, color, idType, idNumber } = req.body;
 
     if (!ownerName || !vehicleType || !plateNumber || !model) {
       return res.status(400).json({
@@ -750,7 +751,7 @@ guardRoutes.post("/register-vehicle", async (req, res, next) => {
         userId: visitorUser.id,
         type: vehicleType.trim(),
         plateNumber: normalizedPlate,
-        brand: model.split(" ")[0] || "Vehicle",
+        brand: brand ? brand.trim() : (model.split(" ")[0] || "Vehicle"),
         model: model.trim(),
         color: color ? color.trim() : "Standard",
         year: "2026",

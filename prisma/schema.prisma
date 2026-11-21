@@ -46,6 +46,7 @@ model Vehicle {
   rejectionReason    String?
   qrCode             String?   @unique
   registrationSource String    @default("Online")
+  photo              String?   @db.Text
   approvedAt         DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -148,4 +149,14 @@ model Notification {
   updatedAt   DateTime  @updatedAt
 
   @@map("notification")
+}
+
+model VehicleSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique @default("options")
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("vehicle_setting")
 }

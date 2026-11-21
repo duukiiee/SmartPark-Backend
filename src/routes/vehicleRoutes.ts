@@ -10,6 +10,64 @@ export const adminVehicleRoutes = Router();
 // ====================================================================
 studentVehicleRoutes.use(requireAuth);
 
+export const DEFAULT_VEHICLE_OPTIONS = {
+  cars: [
+    { brand: "Toyota", models: ["Vios", "Fortuner", "Innova", "Wigo", "Rush", "Corolla Altis", "Hilux", "Raize", "Avanza", "Yaris Cross"] },
+    { brand: "Honda", models: ["City", "Civic", "CR-V", "BR-V", "Brio", "HR-V"] },
+    { brand: "Mitsubishi", models: ["Mirage G4", "Mirage Hatchback", "Xpander", "Montero Sport", "Strada", "Outlander"] },
+    { brand: "Nissan", models: ["Navara", "Almera", "Terra", "Urvan", "Kicks e-Power", "Patrol"] },
+    { brand: "Suzuki", models: ["Swift", "Dzire", "Ertiga", "Jimny", "S-Presso", "Celerio", "XL7"] },
+    { brand: "Hyundai", models: ["Accent", "Tucson", "Stargazer", "Creta", "Custin", "Santa Fe"] },
+    { brand: "Ford", models: ["Ranger", "Everest", "Territory", "Explorer"] },
+    { brand: "Geely", models: ["Coolray", "Emgrand", "Okavango", "Azkarra"] },
+    { brand: "MG", models: ["MG 5", "ZS", "GT", "One"] },
+    { brand: "BYD", models: ["Atto 3", "Dolphin", "Seal", "Sealion 6"] },
+    { brand: "Kia", models: ["Soluto", "Seltos", "Carnival", "Sonet", "K2500"] },
+    { brand: "Isuzu", models: ["D-Max", "mu-X", "Traviz"] },
+    { brand: "Mazda", models: ["Mazda 2", "Mazda 3", "CX-30", "CX-5", "BT-50"] }
+  ],
+  motorcycles: [
+    { brand: "Honda", models: ["Click 125", "Click 160", "Beat", "ADV 160", "PCX 160", "Wave 110", "Winner X", "Airblade 160", "CBR150R", "TMX 125"] },
+    { brand: "Yamaha", models: ["Mio Sporty", "Mio i125 (M3)", "NMAX 155", "Aerox 155", "Sniper 155", "Mio Gravis", "Mio Fazzio", "XSR 155", "YZF-R15", "Sight 115"] },
+    { brand: "Suzuki", models: ["Raider 150 Fi", "Raider 150 Carb", "Burgman Street 125", "Smash 115", "Avenis 125", "Gixxer 150"] },
+    { brand: "Kawasaki", models: ["Barako II", "Ninja 400", "Rouser NS200", "Dominar 400", "Fury 125", "W175"] },
+    { brand: "Vespa", models: ["Primavera 150", "Sprint 150", "GTS 300", "S 125"] },
+    { brand: "Kymco", models: ["Like 125", "Like 150i", "Super Z 150", "KRV 180"] }
+  ],
+  colors: [
+    "White", "Black", "Silver", "Gray", "Red", "Blue", "Brown", "Yellow", "Orange", "Green", "Pearl White", "Metallic Gray", "Midnight Blue"
+  ],
+  years: Array.from({ length: 27 }, (_, i) => (2026 - i).toString())
+};
+
+export async function getOrCreateVehicleOptions() {
+  let setting = await db.vehicleSetting.findUnique({
+    where: { key: "options" },
+  });
+  if (!setting) {
+    setting = await db.vehicleSetting.create({
+      data: {
+        key: "options",
+        data: DEFAULT_VEHICLE_OPTIONS,
+      },
+    });
+  }
+  return setting.data;
+}
+
+// 0. GET /api/vehicles/options - Dynamic vehicle brands, models, colors, years
+studentVehicleRoutes.get("/options", async (req, res, next) => {
+  try {
+    const options = await getOrCreateVehicleOptions();
+    return res.status(200).json({
+      success: true,
+      options,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 1. GET /api/vehicles/my-vehicles - List logged in user's vehicles
 studentVehicleRoutes.get("/my-vehicles", async (req, res, next) => {
   try {
@@ -35,7 +93,7 @@ studentVehicleRoutes.get("/my-vehicles", async (req, res, next) => {
 studentVehicleRoutes.post("/", async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const { type, plateNumber, brand, model, color, year } = req.body;
+    const { type, plateNumber, brand, model, color, year, photo } = req.body;
 
     if (!type || !plateNumber || !brand || !model || !color || !year) {
       return res.status(400).json({
@@ -79,6 +137,7 @@ studentVehicleRoutes.post("/", async (req, res, next) => {
         model: model.trim(),
         color: color.trim(),
         year: year.toString().trim(),
+        photo: photo || null,
         status: "Pending",
         qrCode: null,
         registrationSource: "Online",
@@ -129,7 +188,7 @@ studentVehicleRoutes.patch("/:id", async (req, res, next) => {
       });
     }
 
-    const { type, plateNumber, brand, model, color, year } = req.body;
+    const { type, plateNumber, brand, model, color, year, photo } = req.body;
     const updateData: any = {};
 
     if (type) updateData.type = type.trim();
@@ -137,6 +196,7 @@ studentVehicleRoutes.patch("/:id", async (req, res, next) => {
     if (model) updateData.model = model.trim();
     if (color) updateData.color = color.trim();
     if (year) updateData.year = year.toString().trim();
+    if (photo !== undefined) updateData.photo = photo;
 
     if (plateNumber) {
       const normalizedPlate = plateNumber.trim().toUpperCase();
@@ -347,6 +407,46 @@ studentVehicleRoutes.post("/:id/generate-qr", async (req, res, next) => {
 // ====================================================================
 adminVehicleRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN"));
 
+// 0. Options Management (GET, PUT, RESET)
+adminVehicleRoutes.get("/options", async (req, res, next) => {
+  try {
+    const options = await getOrCreateVehicleOptions();
+    return res.status(200).json({ success: true, options });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminVehicleRoutes.put("/options", async (req, res, next) => {
+  try {
+    const { options } = req.body;
+    if (!options) {
+      return res.status(400).json({ success: false, message: "Options data is required" });
+    }
+    const setting = await db.vehicleSetting.upsert({
+      where: { key: "options" },
+      update: { data: options },
+      create: { key: "options", data: options },
+    });
+    return res.status(200).json({ success: true, message: "Vehicle options updated successfully", options: setting.data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminVehicleRoutes.post("/options/reset", async (req, res, next) => {
+  try {
+    const setting = await db.vehicleSetting.upsert({
+      where: { key: "options" },
+      update: { data: DEFAULT_VEHICLE_OPTIONS },
+      create: { key: "options", data: DEFAULT_VEHICLE_OPTIONS },
+    });
+    return res.status(200).json({ success: true, message: "Vehicle options reset to standard list", options: setting.data });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 1. GET /api/admin/vehicles - List all vehicles with filters & pagination
 adminVehicleRoutes.get("/", async (req, res, next) => {
   try {
@@ -438,6 +538,7 @@ adminVehicleRoutes.get("/", async (req, res, next) => {
       approvedAt: v.approvedAt,
       createdAt: v.createdAt,
       updatedAt: v.updatedAt,
+      photo: v.photo,
       user: v.user,
     }));
 
@@ -537,6 +638,7 @@ adminVehicleRoutes.get("/registrations", async (req, res, next) => {
       rejectionReason: v.rejectionReason,
       qrCode: v.qrCode,
       registrationSource: v.registrationSource,
+      photo: v.photo,
       user: v.user,
     }));
 
@@ -606,6 +708,7 @@ adminVehicleRoutes.get("/:id", async (req, res, next) => {
       }),
       qrStatus: vehicle.status === "Approved" ? "Active" : "Inactive",
       qrCode: vehicle.qrCode,
+      photo: vehicle.photo,
       rejectionReason: vehicle.rejectionReason,
       owner: {
         fullName: `${vehicle.user.firstName} ${vehicle.user.lastName}`,

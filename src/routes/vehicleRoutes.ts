@@ -15,7 +15,10 @@ studentVehicleRoutes.get("/my-vehicles", async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const vehicles = await db.vehicle.findMany({
-      where: { userId },
+      where: {
+        userId,
+        status: { not: "Deleted" },
+      },
       orderBy: { createdAt: "desc" },
     });
 
@@ -49,9 +52,21 @@ studentVehicleRoutes.post("/", async (req, res, next) => {
     });
 
     if (existingVehicle) {
-      return res.status(400).json({
-        success: false,
-        message: "Plate number is already registered",
+      // If currently Approved or Pending, do not allow duplicate active registration
+      if (existingVehicle.status === "Approved" || existingVehicle.status === "Pending") {
+        return res.status(400).json({
+          success: false,
+          message: "Plate number is already actively registered or pending approval.",
+        });
+      }
+
+      // If the vehicle was previously Inactive, Rejected, or Deleted, archive the old plate to free it up
+      await db.vehicle.update({
+        where: { id: existingVehicle.id },
+        data: {
+          plateNumber: `${existingVehicle.plateNumber}-ARCHIVED-${existingVehicle.id}-${Date.now()}`,
+          status: "Deleted",
+        },
       });
     }
 
@@ -191,6 +206,56 @@ studentVehicleRoutes.post("/:id/deactivate", async (req, res, next) => {
       success: true,
       message: "Vehicle deactivated successfully",
       vehicle: updatedVehicle,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+// 4.5. DELETE /api/vehicles/:id - Delete/remove vehicle (frees up plate number)
+studentVehicleRoutes.delete("/:id", async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const vehicleId = parseInt(req.params.id, 10);
+
+    if (isNaN(vehicleId)) {
+      return res.status(400).json({ success: false, message: "Invalid vehicle ID" });
+    }
+
+    const vehicle = await db.vehicle.findUnique({
+      where: { id: vehicleId },
+    });
+
+    if (!vehicle || vehicle.userId !== userId) {
+      return res.status(404).json({
+        success: false,
+        message: "Vehicle not found or unauthorized",
+      });
+    }
+
+    // Check if vehicle has historical parking logs
+    const parkingLogsCount = await db.parkingLog.count({
+      where: { vehicleId },
+    });
+
+    if (parkingLogsCount > 0) {
+      // Archive to preserve historical parking logs for admin audit without blocking plate reuse
+      await db.vehicle.update({
+        where: { id: vehicleId },
+        data: {
+          plateNumber: `${vehicle.plateNumber}-DELETED-${vehicle.id}-${Date.now()}`,
+          status: "Deleted",
+        },
+      });
+    } else {
+      // No parking history, safe to hard delete completely
+      await db.vehicle.delete({
+        where: { id: vehicleId },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Vehicle removed successfully",
     });
   } catch (error) {
     next(error);

@@ -46,6 +46,8 @@ async function seedInitialIncidentsIfEmpty() {
   }
 }
 
+let hasSeededIncidents = false;
+
 // ----------------------------------------------------
 // ADMIN ROUTES (/api/admin/incidents)
 // ----------------------------------------------------
@@ -57,34 +59,16 @@ adminIncidentRoutes.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN", "GUARD"
  */
 adminIncidentRoutes.get("/", async (req, res, next) => {
   try {
-    await seedInitialIncidentsIfEmpty();
+    if (!hasSeededIncidents) {
+      hasSeededIncidents = true;
+      await seedInitialIncidentsIfEmpty();
+    }
 
     const search = (req.query.search as string)?.trim() || "";
     const status = (req.query.status as string)?.trim() || "All";
     const page = parseInt(req.query.page as string, 10) || 1;
     const limit = parseInt(req.query.limit as string, 10) || 10;
     const skip = (page - 1) * limit;
-
-    // Fetch all vehicles to cross-reference registered owners by plate
-    const registeredVehicles = await db.vehicle.findMany({
-      include: {
-        user: {
-          select: {
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-          },
-        },
-      },
-    });
-
-    const vehicleMap = new Map<string, any>();
-    registeredVehicles.forEach((v) => {
-      if (v.plateNumber) {
-        vehicleMap.set(v.plateNumber.toUpperCase().replace(/\s+/g, ""), v);
-      }
-    });
 
     // Build Prisma query condition
     const where: any = {};
@@ -112,6 +96,38 @@ adminIncidentRoutes.get("/", async (req, res, next) => {
         take: limit,
       }),
     ]);
+
+    // Targeted vehicle lookup for only the currently displayed incidents (at most 10 rows)
+    const plateList = Array.from(
+      new Set(
+        incidents
+          .map((i) => i.plateNumber?.trim().toUpperCase())
+          .filter(Boolean) as string[]
+      )
+    );
+
+    const matchedVehicles = plateList.length > 0
+      ? await db.vehicle.findMany({
+          where: { plateNumber: { in: plateList } },
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+              },
+            },
+          },
+        })
+      : [];
+
+    const vehicleMap = new Map<string, any>();
+    matchedVehicles.forEach((v) => {
+      if (v.plateNumber) {
+        vehicleMap.set(v.plateNumber.toUpperCase().replace(/\s+/g, ""), v);
+      }
+    });
 
     // Metrics calculations
     const now = new Date();

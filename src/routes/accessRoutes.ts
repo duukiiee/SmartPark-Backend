@@ -68,10 +68,26 @@ adminAccessRoutes.get("/records", async (req, res, next) => {
         { exitTime: null },
       ];
     }
-    // "Entries" shows all parking logs ordered by entryTime
 
-    // Fetch matching logs with vehicle and owner relations
-    const [totalMatching, rawLogs] = await Promise.all([
+    if (search) {
+      const searchOR = [
+        { vehicle: { plateNumber: { contains: search, mode: "insensitive" } } },
+        { vehicle: { brand: { contains: search, mode: "insensitive" } } },
+        { vehicle: { model: { contains: search, mode: "insensitive" } } },
+        { vehicle: { user: { firstName: { contains: search, mode: "insensitive" } } } },
+        { vehicle: { user: { lastName: { contains: search, mode: "insensitive" } } } },
+        { guardName: { contains: search, mode: "insensitive" } },
+      ];
+      if (whereCondition.OR) {
+        whereCondition.AND = [{ OR: whereCondition.OR }, { OR: searchOR }];
+        delete whereCondition.OR;
+      } else {
+        whereCondition.OR = searchOR;
+      }
+    }
+
+    // Fetch matching count and paginated logs directly from database
+    const [total, rawLogs] = await Promise.all([
       db.parkingLog.count({ where: whereCondition }),
       db.parkingLog.findMany({
         where: whereCondition,
@@ -90,11 +106,13 @@ adminAccessRoutes.get("/records", async (req, res, next) => {
           },
         },
         orderBy: tab === "Exits" ? { exitTime: "desc" } : { entryTime: "desc" },
+        skip,
+        take: limit,
       }),
     ]);
 
     // Map logs to frontend table format
-    const mappedRecords = rawLogs.map((log) => {
+    const filteredRecords = rawLogs.map((log) => {
       const ownerName = log.vehicle?.user
         ? `${log.vehicle.user.firstName} ${log.vehicle.user.lastName}`
         : "Visitor / Driver";
@@ -121,20 +139,8 @@ adminAccessRoutes.get("/records", async (req, res, next) => {
       };
     });
 
-    // Apply search filter if query provided
-    const filteredRecords = search
-      ? mappedRecords.filter(
-          (r) =>
-            r.plateNo.toLowerCase().includes(search) ||
-            r.owner.toLowerCase().includes(search) ||
-            r.vehicleDesc.toLowerCase().includes(search) ||
-            r.guard.toLowerCase().includes(search)
-        )
-      : mappedRecords;
-
-    const total = filteredRecords.length;
     const totalPages = Math.ceil(total / limit) || 1;
-    const paginatedRecords = filteredRecords.slice(skip, skip + limit);
+    const paginatedRecords = filteredRecords;
 
     return res.status(200).json({
       success: true,

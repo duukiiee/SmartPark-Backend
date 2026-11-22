@@ -211,81 +211,81 @@ adminParkingRoutes.get("/history", async (req, res, next) => {
     const limit = parseInt(req.query.limit as string, 10) || 10;
     const skip = (page - 1) * limit;
 
-    // Fetch all parking logs to calculate filters
-    const allLogs = await db.parkingLog.findMany({
-      include: {
-        vehicle: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true,
-                schoolId: true,
-                email: true,
-              },
-            },
-          },
-        },
-      },
-      orderBy: {
-        entryTime: "desc",
-      },
-    });
-
     // Helper functions for date/time formatting
     const formatDate = (date: Date) =>
       date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const formatTime = (date: Date) =>
       date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
 
-    // Collect available unique dates for dropdown
-    const availableDatesSet = new Set<string>();
-    allLogs.forEach((log) => {
-      if (log.entryTime) {
-        availableDatesSet.add(formatDate(log.entryTime));
+    // Build efficient Prisma WHERE clause
+    const where: any = {};
+
+    if (vehicleType !== "All") {
+      where.vehicle = { ...(where.vehicle || {}), type: vehicleType };
+    }
+
+    if (statusFilter !== "All") {
+      where.status = statusFilter;
+    }
+
+    if (search) {
+      where.OR = [
+        { vehicle: { plateNumber: { contains: search, mode: "insensitive" } } },
+        { vehicle: { brand: { contains: search, mode: "insensitive" } } },
+        { vehicle: { model: { contains: search, mode: "insensitive" } } },
+        { vehicle: { user: { firstName: { contains: search, mode: "insensitive" } } } },
+        { vehicle: { user: { lastName: { contains: search, mode: "insensitive" } } } },
+        { guardName: { contains: search, mode: "insensitive" } },
+      ];
+    }
+
+    if (dateFilter !== "All Dates") {
+      const parsedDate = new Date(dateFilter);
+      if (!isNaN(parsedDate.getTime())) {
+        const startOfDay = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate());
+        const endOfDay = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate() + 1);
+        where.entryTime = { gte: startOfDay, lt: endOfDay };
       }
+    }
+
+    // Parallel fetch: total count, paginated records, and distinct date samples
+    const [total, paginatedSlice, recentDateLogs] = await Promise.all([
+      db.parkingLog.count({ where }),
+      db.parkingLog.findMany({
+        where,
+        include: {
+          vehicle: {
+            include: {
+              user: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  schoolId: true,
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: { entryTime: "desc" },
+        skip,
+        take: limit,
+      }),
+      db.parkingLog.findMany({
+        select: { entryTime: true },
+        orderBy: { entryTime: "desc" },
+        take: 50,
+      }),
+    ]);
+
+    // Unique dates from recent logs for filter dropdown
+    const availableDatesSet = new Set<string>();
+    recentDateLogs.forEach((log) => {
+      if (log.entryTime) availableDatesSet.add(formatDate(log.entryTime));
     });
     const availableDates = ["All Dates", ...Array.from(availableDatesSet)];
 
-    // Filter in-memory for flexible multi-criteria search
-    let filteredLogs = allLogs.filter((log) => {
-      const v = log.vehicle;
-      const ownerName = v.user ? `${v.user.firstName} ${v.user.lastName}` : "";
-      const vehicleName = `${v.brand} ${v.model}`;
-
-      // Search match
-      if (search) {
-        const query = search.toLowerCase();
-        const matchesPlate = v.plateNumber?.toLowerCase().includes(query);
-        const matchesName = vehicleName.toLowerCase().includes(query);
-        const matchesOwner = ownerName.toLowerCase().includes(query);
-        const matchesGuard = log.guardName?.toLowerCase().includes(query);
-        if (!matchesPlate && !matchesName && !matchesOwner && !matchesGuard) {
-          return false;
-        }
-      }
-
-      // Vehicle Type match
-      if (vehicleType !== "All" && v.type !== vehicleType) {
-        return false;
-      }
-
-      // Date match
-      if (dateFilter !== "All Dates" && formatDate(log.entryTime) !== dateFilter) {
-        return false;
-      }
-
-      // Status match
-      if (statusFilter !== "All" && log.status !== statusFilter) {
-        return false;
-      }
-
-      return true;
-    });
-
-    const total = filteredLogs.length;
     const totalPages = Math.ceil(total / limit) || 1;
-    const paginatedSlice = filteredLogs.slice(skip, skip + limit);
 
     const formattedHistory = paginatedSlice.map((log) => {
       const v = log.vehicle;

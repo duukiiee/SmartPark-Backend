@@ -1,4 +1,4 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
@@ -444,13 +444,41 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
       }
     }
 
+    const nameRegex = /^[a-zA-ZñÑÀ-ÿ\s'-]+$/;
+
     // Handle explicit firstName/lastName
-    if (firstName !== undefined && typeof firstName === "string" && firstName.trim()) {
-      updateData.firstName = firstName.trim();
+    if (firstName !== undefined) {
+      if (typeof firstName !== "string" || !firstName.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "First name cannot be empty.",
+        });
+      }
+      const cleanFirst = firstName.trim();
+      if (!nameRegex.test(cleanFirst)) {
+        return res.status(400).json({
+          success: false,
+          message: "First name must only contain letters, spaces, and hyphens (numbers and special characters are not allowed).",
+        });
+      }
+      updateData.firstName = cleanFirst;
     }
 
-    if (lastName !== undefined && typeof lastName === "string" && lastName.trim()) {
-      updateData.lastName = lastName.trim();
+    if (lastName !== undefined) {
+      if (typeof lastName !== "string" || !lastName.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Last name cannot be empty.",
+        });
+      }
+      const cleanLast = lastName.trim();
+      if (!nameRegex.test(cleanLast)) {
+        return res.status(400).json({
+          success: false,
+          message: "Last name must only contain letters, spaces, and hyphens (numbers and special characters are not allowed).",
+        });
+      }
+      updateData.lastName = cleanLast;
     }
 
     // Update user in database

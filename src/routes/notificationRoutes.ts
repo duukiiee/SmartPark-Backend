@@ -20,11 +20,17 @@ function formatTime(date: Date): string {
   });
 }
 
+let hasInitialSyncRun = false;
+
 /**
- * Auto-sync helper: creates notifications for pending incidents, vehicle registrations, approvals, or capacity warnings
+ * Auto-sync helper: seeds notifications only if initial sync has not run yet
  */
 async function syncSystemNotifications() {
+  if (hasInitialSyncRun) return;
+  hasInitialSyncRun = true;
   try {
+    const existingCount = await db.notification.count();
+    if (existingCount > 0) return; // Database already has notifications, no heavy sync needed!
     // 1. Check pending incidents -> Alerts
     const pendingIncidents = await db.incident.findMany({
       where: { status: "Pending" },
@@ -148,7 +154,7 @@ async function syncSystemNotifications() {
  */
 adminNotificationRoutes.get("/", async (req, res, next) => {
   try {
-    await syncSystemNotifications();
+    syncSystemNotifications().catch(() => {});
 
     const search = (req.query.search as string)?.trim() || "";
     const tab = (req.query.tab as string)?.trim() || "all"; // "all" | "unread" | "alerts" | "updates"

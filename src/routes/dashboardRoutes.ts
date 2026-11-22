@@ -285,3 +285,28 @@ adminDashboardRoutes.get("/", async (req, res, next) => {
     next(err);
   }
 });
+
+/**
+ * GET /api/admin/dashboard/sidebar-counts
+ * Lightweight endpoint to fetch live notification counters for sidebar badges
+ */
+adminDashboardRoutes.get("/sidebar-counts", async (req, res, next) => {
+  try {
+    const [pendingVehicles, pendingIncidents, unreadNotifications] = await Promise.all([
+      db.vehicle.count({ where: { status: "Pending" } }),
+      db.incident.count({ where: { status: "Pending" } }),
+      db.notification.count({ where: { read: false } }),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      counts: {
+        pendingVehicles,
+        pendingIncidents,
+        unreadNotifications,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});

@@ -461,7 +461,7 @@ adminVehicleRoutes.get("/", async (req, res, next) => {
     const where: any = {};
 
     if (tab === "Gate Registered Vehicles") {
-      where.status = "Approved";
+      where.registrationSource = "Gate";
     }
 
     if (status && status !== "All") {

@@ -2,6 +2,11 @@ import { Router } from "express";
 import { db } from "../prisma/db.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
 
+import {
+  sendAccountSuspensionEmail,
+  sendAccountDeactivationEmail,
+} from "../utils/email.js";
+
 // Helper to ensure all Philippine mobile numbers are normalized to 09XXXXXXXXX in the database
 function normalizeToPhilippine09(phoneStr?: string | null): string | null {
   if (!phoneStr || !phoneStr.trim()) return null;
@@ -350,10 +355,19 @@ router.post("/accounts/:id/suspend", async (req, res, next) => {
     const { durationDays, suspendedUntil, reason } = req.body;
     if (!reason) return res.status(400).json({ success: false, message: "Reason is required" });
     let suspensionDate = suspendedUntil ? new Date(suspendedUntil) : new Date(Date.now() + (durationDays || 0) * 24 * 60 * 60 * 1000);
+    
+    const targetUser = await db.user.findUnique({ where: { id } });
+    if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
+
     const updatedUser = await db.user.update({
       where: { id },
       data: { accountStatus: "Suspended", suspendedUntil: suspensionDate, suspensionReason: reason.trim() },
     });
+
+    sendAccountSuspensionEmail(targetUser.email, targetUser.firstName, reason.trim(), suspensionDate).catch(err => {
+      console.error("Failed to send suspension email:", err);
+    });
+
     return res.status(200).json({ success: true, account: updatedUser });
   } catch (error) { next(error); }
 });
@@ -362,7 +376,15 @@ router.post("/accounts/:id/suspend", async (req, res, next) => {
 router.post("/accounts/:id/deactivate", async (req, res, next) => {
     try {
         const id = parseInt(req.params.id, 10);
+        const targetUser = await db.user.findUnique({ where: { id } });
+        if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
+
         const updatedUser = await db.user.update({ where: { id }, data: { accountStatus: "Deactivated" } });
+
+        sendAccountDeactivationEmail(targetUser.email, targetUser.firstName).catch(err => {
+          console.error("Failed to send deactivation email:", err);
+        });
+
         return res.status(200).json({ success: true, account: updatedUser });
     } catch (error) { next(error); }
 });

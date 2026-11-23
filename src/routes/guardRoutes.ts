@@ -724,31 +724,11 @@ guardRoutes.post("/register-vehicle", async (req, res, next) => {
       });
     }
 
-    // Find or create a default visitor user account for gate registrations
-    let visitorUser = await db.user.findFirst({
-      where: { email: "visitor@smartpark.local" },
-    });
-
-    if (!visitorUser) {
-      visitorUser = await db.user.create({
-        data: {
-          firstName: "Gate",
-          lastName: "Visitor",
-          email: "visitor@smartpark.local",
-          schoolId: "VISITOR-001",
-          password: "NOPASSWORD_GATE_VISITOR",
-          role: "USER",
-          accountType: "VISITOR",
-          accountStatus: "Active",
-        },
-      });
-    }
-
     const qrCode = `SP-${normalizedPlate.replace(/[^A-Z0-9]/g, "")}-${Date.now()}`;
 
     const newVehicle = await db.vehicle.create({
       data: {
-        userId: visitorUser.id,
+        userId: undefined,
         type: vehicleType.trim(),
         plateNumber: normalizedPlate,
         brand: brand ? brand.trim() : (model.split(" ")[0] || "Vehicle"),
@@ -759,7 +739,7 @@ guardRoutes.post("/register-vehicle", async (req, res, next) => {
         approvedAt: new Date(),
         qrCode,
         registrationSource: "Gate",
-      },
+      } as any,
     });
 
     return res.status(201).json({

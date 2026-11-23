@@ -406,6 +406,7 @@ router.get("/appeals", async (req, res, next) => {
             email: true,
             role: true,
             schoolId: true,
+            avatar: true,
           },
         },
       },
@@ -430,6 +431,7 @@ router.get("/appeals", async (req, res, next) => {
           email: a.user.email,
           role: a.user.role,
           schoolId: a.user.schoolId,
+          avatar: a.user.avatar,
         },
       })),
       metrics: {

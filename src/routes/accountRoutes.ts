@@ -13,7 +13,7 @@ function normalizeToPhilippine09(phoneStr?: string | null): string | null {
 }
 
 // Canonical account status values. Must match the casing checked in authMiddleware.ts
-const ACCOUNT_STATUSES = ["Active", "Inactive", "Suspended", "Deactivated", "Locked"];
+const ACCOUNT_STATUSES = ["Active", "PendingActivation", "Inactive", "Suspended", "Deactivated", "Locked"];
 
 // Normalizes incoming status casing (e.g. "ACTIVE" -> "Active"); returns null if unknown
 function normalizeAccountStatus(status: unknown): string | null {
@@ -31,23 +31,27 @@ router.use(requireAuth, requireRole("ADMIN", "SUPER_ADMIN"));
 router.get("/accounts", async (req, res, next) => {
   try {
     const search = (req.query.search as string)?.trim() || "";
-    const tab = (req.query.tab as string) || "All";
+    const rawTab = (req.query.tab as string)?.trim() || "All";
     const status = (req.query.status as string) || "All";
     const page = parseInt(req.query.page as string, 10) || 1;
     const limit = parseInt(req.query.limit as string, 10) || 10;
     const skip = (page - 1) * limit;
 
     const where: any = {};
-    if (tab === "Administrators") {
-      where.role = { in: ["ADMIN", "SUPER_ADMIN"] };
-    } else if (tab === "Guards") {
-      where.role = "GUARD";
-    } else if (tab === "Users") {
-      where.role = "USER";
+    const lowerTab = rawTab.toLowerCase();
+    if (lowerTab === "administrators" || lowerTab === "admin" || lowerTab === "administrator") {
+      where.role = { in: ["ADMIN", "SUPER_ADMIN", "admin", "super_admin"] };
+    } else if (lowerTab === "guards" || lowerTab === "guard") {
+      where.role = { in: ["GUARD", "guard", "Guard"] };
+    } else if (lowerTab === "users" || lowerTab === "user") {
+      where.role = { in: ["USER", "user", "STUDENT", "student"] };
     }
 
     if (status && status !== "All") {
       where.accountStatus = status;
+    } else {
+      // Exclude PendingVerification accounts from account and user management listings
+      where.accountStatus = { not: "PendingVerification" };
     }
 
     if (search) {
@@ -81,10 +85,10 @@ router.get("/accounts", async (req, res, next) => {
         },
       }),
       db.user.count({ where }),
-      db.user.count(),
-      db.user.count({ where: { role: { in: ["ADMIN", "SUPER_ADMIN"] } } }),
-      db.user.count({ where: { role: "GUARD" } }),
-      db.user.count({ where: { role: "USER" } }),
+      db.user.count({ where: { accountStatus: { not: "PendingVerification" } } }),
+      db.user.count({ where: { role: { in: ["ADMIN", "SUPER_ADMIN", "admin", "super_admin"] }, accountStatus: { not: "PendingVerification" } } }),
+      db.user.count({ where: { role: { in: ["GUARD", "guard", "Guard"] }, accountStatus: { not: "PendingVerification" } } }),
+      db.user.count({ where: { role: { in: ["USER", "user", "STUDENT", "student"] }, accountStatus: { not: "PendingVerification" } } }),
     ]);
 
     const accounts = rawAccounts.map((u) => ({
@@ -374,6 +378,131 @@ router.post("/accounts/:id/set-status", async (req, res, next) => {
         const updatedUser = await db.user.update({ where: { id }, data });
         return res.status(200).json({ success: true, account: updatedUser });
     } catch (error) { next(error); }
+});
+
+// 8. GET /api/admin/appeals
+router.get("/appeals", async (req, res, next) => {
+  try {
+    const currentUser = req.user!;
+    const isSuperAdmin = currentUser.role?.toUpperCase() === "SUPER_ADMIN";
+
+    // RBAC: Super Admin can view Admin, Guard, User appeals. Admin can view Guard, User appeals only.
+    const roleFilter = isSuperAdmin
+      ? ["ADMIN", "SUPER_ADMIN", "GUARD", "USER", "STUDENT"]
+      : ["GUARD", "USER", "STUDENT"];
+
+    const appeals = await db.appeal.findMany({
+      where: {
+        user: {
+          role: { in: roleFilter },
+        },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            role: true,
+            schoolId: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const pendingAppealsCount = appeals.filter((a: any) => a.status === "Pending").length;
+
+    return res.status(200).json({
+      success: true,
+      appeals: appeals.map((a: any) => ({
+        id: a.id,
+        referenceId: a.referenceId,
+        subject: a.subject,
+        reason: a.reason,
+        additionalInfo: a.additionalInfo,
+        status: a.status,
+        createdAt: a.createdAt,
+        user: {
+          id: a.user.id,
+          name: `${a.user.firstName} ${a.user.lastName}`,
+          email: a.user.email,
+          role: a.user.role,
+          schoolId: a.user.schoolId,
+        },
+      })),
+      metrics: {
+        pendingAppeals: pendingAppealsCount,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 9. PATCH /api/admin/appeals/:id/review
+router.patch("/appeals/:id/review", async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ success: false, message: "Invalid appeal ID" });
+    }
+    const { action } = req.body; // "Approved" | "Rejected"
+    if (!["Approved", "Rejected"].includes(action)) {
+      return res.status(400).json({ success: false, message: "Invalid action. Must be 'Approved' or 'Rejected'." });
+    }
+
+    const appeal = await db.appeal.findUnique({
+      where: { id },
+      include: { user: true },
+    });
+
+    if (!appeal) {
+      return res.status(404).json({ success: false, message: "Appeal not found" });
+    }
+
+    const currentUser = req.user!;
+    const isSuperAdmin = currentUser.role?.toUpperCase() === "SUPER_ADMIN";
+    const targetRole = appeal.user.role?.toUpperCase();
+
+    // Regular admin cannot review Admin/Super Admin appeals
+    if (!isSuperAdmin && (targetRole === "ADMIN" || targetRole === "SUPER_ADMIN")) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. Only Super Administrators can review administrator appeals.",
+      });
+    }
+
+    const updatedAppeal = await db.appeal.update({
+      where: { id },
+      data: {
+        status: action,
+        reviewedBy: `Admin (${currentUser.email})`,
+        reviewedAt: new Date(),
+      },
+    });
+
+    // If Approved, lift user suspension and set status back to Active
+    if (action === "Approved") {
+      await db.user.update({
+        where: { id: appeal.userId },
+        data: {
+          accountStatus: "Active",
+          suspendedUntil: null,
+          suspensionReason: null,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Appeal marked as ${action} successfully.`,
+      appeal: updatedAppeal,
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 export default router;

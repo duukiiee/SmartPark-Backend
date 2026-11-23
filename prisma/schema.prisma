@@ -28,6 +28,7 @@ model User {
   vehicles      Vehicle[]
   incidents     Incident[]
   notifications Notification[]
+  appeals       Appeal[]
 
   @@map("user")
 }
@@ -54,7 +55,7 @@ model Vehicle {
   parkingLogs        ParkingLog[]
 
   @@index([userId])
-  @@index([status])
+  @@index([status, createdAt])
   @@map("vehicle")
 }
 
@@ -68,6 +69,8 @@ model ParkingLog {
   status       String    @default("Currently Parked")
   guardName    String    @default("Guard Santos")
   createdAt    DateTime  @default(now())
+
+  @@index([createdAt])
   updatedAt    DateTime  @updatedAt
 
   @@index([vehicleId])
@@ -109,7 +112,7 @@ model Incident {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  @@index([status])
+  @@index([status, createdAt])
   @@index([plateNumber])
   @@index([createdAt])
   @@map("incident")
@@ -171,4 +174,24 @@ model VehicleSetting {
   updatedAt DateTime @updatedAt
 
   @@map("vehicle_setting")
+}
+
+model Appeal {
+  id             Int       @id @default(autoincrement())
+  referenceId    String    @unique
+  userId         Int
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject        String
+  reason         String
+  additionalInfo String?
+  status         String    @default("Pending") // "Pending", "Approved", "Rejected"
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("appeal")
 }

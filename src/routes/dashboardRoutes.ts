@@ -52,67 +52,113 @@ adminDashboardRoutes.get("/", async (req, res, next) => {
     const setting = await getOrCreateParkingSetting();
     const totalCapacity = setting.carCapacity + setting.motorcycleCapacity;
 
-    // 1. Live Core Metrics
+    // Single batched round-trip: metrics + awaiting items + activity feed + weekly trend
     const [
       currentlyInside,
       todayEntries,
       todayExits,
       lastExitLog,
       pendingIncidentCount,
-      latestIncident,
+      pendingIncidents,
       pendingVehicleCount,
-      latestVehicle,
-      recentParkingLogs,
+      pendingVehicles,
+      recentLogsForActivity,
+      recentIncidentsForActivity,
+      recentVehiclesForActivity,
+      weeklyTrendRows,
     ] = await Promise.all([
+      // 1. Count currently parked
       db.parkingLog.count({
         where: {
           OR: [{ status: "Currently Parked" }, { exitTime: null }],
         },
       }),
+      // 2. Today entries
       db.parkingLog.count({
         where: { entryTime: { gte: startOfToday } },
       }),
+      // 3. Today exits
       db.parkingLog.count({
         where: { exitTime: { gte: startOfToday } },
       }),
+      // 4. Last exit log
       db.parkingLog.findFirst({
         where: { exitTime: { not: null } },
         orderBy: { exitTime: "desc" },
         select: { exitTime: true },
       }),
+      // 5. Pending incident count
       db.incident.count({
         where: { status: "Pending" },
       }),
-      db.incident.findFirst({
+      // 6. Top-2 pending incidents (composite index: status, createdAt)
+      db.incident.findMany({
         where: { status: "Pending" },
         orderBy: { createdAt: "desc" },
+        take: 2,
+        select: {
+          id: true,
+          referenceId: true,
+          reportType: true,
+          model: true,
+          plateNumber: true,
+        },
       }),
+      // 7. Pending vehicle count
       db.vehicle.count({
         where: { status: "Pending" },
       }),
-      db.vehicle.findFirst({
+      // 8. Top-2 pending vehicles (composite index: status, createdAt)
+      db.vehicle.findMany({
         where: { status: "Pending" },
-        include: {
-          user: {
-            select: {
-              firstName: true,
-              lastName: true,
-            },
-          },
+        orderBy: { createdAt: "desc" },
+        take: 2,
+        select: {
+          id: true,
+          plateNumber: true,
+          brand: true,
+          model: true,
+          user: { select: { firstName: true, lastName: true } },
         },
+      }),
+      // 9. Recent parking logs for activity feed
+      db.parkingLog.findMany({
+        take: 4,
+        orderBy: { createdAt: "desc" },
+        include: { vehicle: true },
+      }),
+      // 10. Recent incidents for activity feed
+      db.incident.findMany({
+        take: 3,
         orderBy: { createdAt: "desc" },
       }),
-      db.parkingLog.findMany({
-        where: { entryTime: { gte: past7Days } },
-        select: { entryTime: true },
+      // 11. Recent vehicle registrations for activity feed
+      db.vehicle.findMany({
+        take: 3,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          plateNumber: true,
+          createdAt: true,
+          user: { select: { firstName: true, lastName: true } },
+        },
       }),
+      // 12. Weekly utilization via DB-side GROUP BY — no JS aggregation of full table rows
+      db.$queryRaw<{ dow: number; cnt: bigint }[]>`
+        SELECT
+          EXTRACT(DOW FROM "entryTime" AT TIME ZONE 'Asia/Manila')::int AS dow,
+          COUNT(*)::bigint AS cnt
+        FROM "parking_log"
+        WHERE "entryTime" >= ${past7Days}
+        GROUP BY dow
+      `,
     ]);
 
+    // --- Metrics ---
     const availableSpaces = Math.max(0, totalCapacity - currentlyInside);
     const occupancyRate = totalCapacity > 0 ? Math.round((currentlyInside / totalCapacity) * 100) : 0;
     const availabilityStatus = occupancyRate >= 85 ? "Low" : occupancyRate >= 50 ? "Moderate" : "High";
 
-    // Format last exit time
     let lastExitTimeFormatted = "None today";
     if (lastExitLog?.exitTime) {
       lastExitTimeFormatted = `Last Exit: ${lastExitLog.exitTime.toLocaleTimeString("en-US", {
@@ -122,48 +168,23 @@ adminDashboardRoutes.get("/", async (req, res, next) => {
       })}`;
     }
 
-    // 2. Weekly Utilization Trend (Mon - Sun counts)
-    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const weeklyUtilization: { [day: string]: number } = {
-      Mon: 0,
-      Tue: 0,
-      Wed: 0,
-      Thu: 0,
-      Fri: 0,
-      Sat: 0,
-      Sun: 0,
+    // --- Weekly Utilization Trend ---
+    // EXTRACT(DOW): 0=Sunday, 1=Monday, ..., 6=Saturday
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+    const weeklyUtilization: Record<string, number> = {
+      Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0,
     };
-
-    recentParkingLogs.forEach((log) => {
-      const dayIdx = new Date(log.entryTime).getDay();
-      const dName = dayNames[dayIdx];
-      if (dName && typeof weeklyUtilization[dName] === "number") {
-        weeklyUtilization[dName] += 1;
+    let totalWeeklyLogs = 0;
+    for (const row of weeklyTrendRows) {
+      const dName = dayNames[row.dow];
+      if (dName) {
+        const cnt = Number(row.cnt);
+        weeklyUtilization[dName] = cnt;
+        totalWeeklyLogs += cnt;
       }
-    });
+    }
 
-    // 3. Compile Live Recent Activity Feed
-    const [recentLogsForActivity, recentIncidentsForActivity, recentVehiclesForActivity] = await Promise.all([
-      db.parkingLog.findMany({
-        take: 4,
-        orderBy: { createdAt: "desc" },
-        include: { vehicle: true },
-      }),
-      db.incident.findMany({
-        take: 3,
-        orderBy: { createdAt: "desc" },
-      }),
-      db.vehicle.findMany({
-        take: 3,
-        orderBy: { createdAt: "desc" },
-        include: {
-          user: {
-            select: { firstName: true, lastName: true },
-          },
-        },
-      }),
-    ]);
-
+    // --- Activity Feed ---
     interface ActivityItem {
       id: string;
       title: string;
@@ -235,6 +256,25 @@ adminDashboardRoutes.get("/", async (req, res, next) => {
       type,
     }));
 
+    // --- Shape awaiting action (top-2 arrays) ---
+    const mappedIncidents = pendingIncidents.map((inc) => ({
+      id: inc.id,
+      referenceId: inc.referenceId,
+      reportType: inc.reportType,
+      model: inc.model || "Vehicle",
+      plate: inc.plateNumber,
+    }));
+
+    const mappedVehicles = pendingVehicles.map((veh) => ({
+      id: veh.id,
+      plateNumber: veh.plateNumber,
+      brand: veh.brand,
+      model: veh.model,
+      ownerName: veh.user
+        ? `${veh.user.lastName}, ${veh.user.firstName}`
+        : "Registered User",
+    }));
+
     return res.status(200).json({
       success: true,
       data: {
@@ -252,30 +292,12 @@ adminDashboardRoutes.get("/", async (req, res, next) => {
         },
         trends: {
           weeklyUtilization,
-          totalWeeklyLogs: recentParkingLogs.length,
+          totalWeeklyLogs,
         },
         awaitingAction: {
-          latestIncident: latestIncident
-            ? {
-                id: latestIncident.id,
-                referenceId: latestIncident.referenceId,
-                reportType: latestIncident.reportType,
-                model: latestIncident.model || "Vehicle",
-                plate: latestIncident.plateNumber,
-              }
-            : null,
+          pendingIncidents: mappedIncidents,
           pendingIncidentCount,
-          latestVehicle: latestVehicle
-            ? {
-                id: latestVehicle.id,
-                plateNumber: latestVehicle.plateNumber,
-                brand: latestVehicle.brand,
-                model: latestVehicle.model,
-                ownerName: latestVehicle.user
-                  ? `${latestVehicle.user.lastName}, ${latestVehicle.user.firstName}`
-                  : "Registered User",
-              }
-            : null,
+          pendingVehicles: mappedVehicles,
           pendingVehicleCount,
         },
         recentActivities,

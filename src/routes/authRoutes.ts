@@ -3,10 +3,29 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { db } from "../prisma/db.js";
-import { loginRateLimiter, authLimiter, checkAccountLockout, recordFailedLogin, recordSuccessfulLogin } from "../middlewares/rateLimiter.js";
+import {
+  loginRateLimiter,
+  authLimiter,
+  checkAccountLockout,
+  recordFailedLogin,
+  recordSuccessfulLogin,
+} from "../middlewares/rateLimiter.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
-import { registerSchema, loginSchema, adminRegisterSchema, forgotPasswordSchema, verifyOtpSchema, resetPasswordSchema, verifyEmailSchema, resendVerificationSchema } from "../validations/authValidation.js";
-import { sendPasswordResetEmail, sendVerificationEmail } from "../utils/email.js";
+import {
+  registerSchema,
+  loginSchema,
+  adminRegisterSchema,
+  forgotPasswordSchema,
+  verifyOtpSchema,
+  resetPasswordSchema,
+  verifyEmailSchema,
+  resendVerificationSchema,
+} from "../validations/authValidation.js";
+import {
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+  sendAccountActivationEmail,
+} from "../utils/email.js";
 
 // Helper to ensure all Philippine mobile numbers are normalized to 09XXXXXXXXX in the database
 function normalizeToPhilippine09(phoneStr?: string | null): string | null {
@@ -31,21 +50,28 @@ router.post("/register", authLimiter, async (req, res, next) => {
       const issue = validation.error.issues[0];
       return res.status(400).json({
         success: false,
-        message: issue ? `${issue.path.join(".")}: ${issue.message}` : "Validation error",
+        message: issue
+          ? `${issue.path.join(".")}: ${issue.message}`
+          : "Validation error",
       });
     }
 
-    const { firstName, lastName, email, schoolId, phone, password } = validation.data;
+    const { firstName, lastName, email, schoolId, phone, password } =
+      validation.data;
     const normalizedEmail = email.toLowerCase();
 
     // 2. Check if an ACTIVE, SUSPENDED, or LOCKED account already exists with this email
     const existingEmailUser = await db.user.findUnique({
       where: { email: normalizedEmail },
     });
-    if (existingEmailUser && existingEmailUser.accountStatus !== "PendingVerification") {
+    if (
+      existingEmailUser &&
+      existingEmailUser.accountStatus !== "PendingVerification"
+    ) {
       return res.status(409).json({
         success: false,
-        message: "An active account with this email address already exists. Please sign in instead.",
+        message:
+          "An active account with this email address already exists. Please sign in instead.",
       });
     }
 
@@ -53,10 +79,14 @@ router.post("/register", authLimiter, async (req, res, next) => {
     const existingSchoolIdUser = await db.user.findUnique({
       where: { schoolId },
     });
-    if (existingSchoolIdUser && existingSchoolIdUser.accountStatus !== "PendingVerification") {
+    if (
+      existingSchoolIdUser &&
+      existingSchoolIdUser.accountStatus !== "PendingVerification"
+    ) {
       return res.status(409).json({
         success: false,
-        message: "An active account with this Student/Employee ID already exists. Please sign in instead.",
+        message:
+          "An active account with this Student/Employee ID already exists. Please sign in instead.",
       });
     }
 
@@ -82,10 +112,7 @@ router.post("/register", authLimiter, async (req, res, next) => {
     await db.user.deleteMany({
       where: {
         accountStatus: "PendingVerification",
-        OR: [
-          { email: normalizedEmail },
-          { schoolId: schoolId },
-        ],
+        OR: [{ email: normalizedEmail }, { schoolId: schoolId }],
       },
     });
 
@@ -127,7 +154,8 @@ router.post("/register", authLimiter, async (req, res, next) => {
 
     return res.status(201).json({
       success: true,
-      message: "Registration successful! A 6-digit verification code has been sent to your email.",
+      message:
+        "Registration successful! A 6-digit verification code has been sent to your email.",
       email: normalizedEmail,
     });
   } catch (error) {
@@ -146,7 +174,9 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       const issue = validation.error.issues[0];
       return res.status(400).json({
         success: false,
-        message: issue ? `${issue.path.join(".")}: ${issue.message}` : "Validation error",
+        message: issue
+          ? `${issue.path.join(".")}: ${issue.message}`
+          : "Validation error",
       });
     }
 
@@ -161,7 +191,8 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
         status: "Locked",
         lockUntil: lockCheck.lockUntil,
         remainingSeconds: lockCheck.remainingSeconds,
-        message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
+        message:
+          "Too many failed login attempts for this account. Account locked for 15 minutes.",
       });
     }
 
@@ -194,13 +225,16 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
     // Check database-backed lockout
     const now = new Date();
     if (user.lockedUntil && user.lockedUntil > now) {
-      const remainingSeconds = Math.ceil((user.lockedUntil.getTime() - now.getTime()) / 1000);
+      const remainingSeconds = Math.ceil(
+        (user.lockedUntil.getTime() - now.getTime()) / 1000,
+      );
       return res.status(423).json({
         success: false,
         status: "Locked",
         lockUntil: user.lockedUntil.getTime(),
         remainingSeconds,
-        message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
+        message:
+          "Too many failed login attempts for this account. Account locked for 15 minutes.",
       });
     }
 
@@ -223,13 +257,16 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
           where: { id: user.id },
           data: { failedAttempts: newAttempts, lockedUntil },
         });
-        const remainingSeconds = Math.ceil((lockedUntil.getTime() - Date.now()) / 1000);
+        const remainingSeconds = Math.ceil(
+          (lockedUntil.getTime() - Date.now()) / 1000,
+        );
         return res.status(423).json({
           success: false,
           status: "Locked",
           lockUntil: lockedUntil.getTime(),
           remainingSeconds,
-          message: "Too many failed login attempts for this account. Account locked for 15 minutes.",
+          message:
+            "Too many failed login attempts for this account. Account locked for 15 minutes.",
         });
       } else {
         await db.user.update({
@@ -250,29 +287,47 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
       if (new Date() > new Date(user.suspendedUntil)) {
         user = await db.user.update({
           where: { id: user.id },
-          data: { accountStatus: "Active", suspendedUntil: null, suspensionReason: null },
+          data: {
+            accountStatus: "Active",
+            suspendedUntil: null,
+            suspensionReason: null,
+          },
         });
       } else {
         return res.status(403).json({
           success: false,
           status: "Suspended",
+          email: user.email,
           message: `Your account is suspended until ${user.suspendedUntil.toLocaleDateString()} due to: ${user.suspensionReason || "N/A"}. Please contact the admin office.`,
         });
       }
     } else if (user.accountStatus === "Suspended") {
-        // Fallback if no suspendedUntil
-        return res.status(403).json({
-          success: false,
-          status: "Suspended",
-          message: "Your account has been suspended. Please contact the admin office.",
-        });
+      // Fallback if no suspendedUntil
+      return res.status(403).json({
+        success: false,
+        status: "Suspended",
+        email: user.email,
+        message:
+          "Your account has been suspended. Please contact the admin office.",
+      });
+    }
+
+    if (user.accountStatus === "PendingActivation") {
+      return res.status(403).json({
+        success: false,
+        status: "PendingActivation",
+        email: user.email,
+        message:
+          "Your account is pending activation. An official invitation was sent to your email. Please click the activation link (valid for 3 days) to activate your account.",
+      });
     }
 
     if (user.accountStatus === "Deactivated") {
       return res.status(403).json({
         success: false,
         status: "Deactivated",
-        message: "Your account has been permanently deactivated. Access is denied.",
+        message:
+          "Your account has been permanently deactivated. Access is denied.",
       });
     }
 
@@ -289,7 +344,8 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
         success: false,
         status: "PendingVerification",
         email: user.email,
-        message: "Your account email is not yet verified. Please verify your email before logging in.",
+        message:
+          "Your account email is not yet verified. Please verify your email before logging in.",
       });
     }
 
@@ -318,7 +374,7 @@ router.post("/login", loginRateLimiter, async (req, res, next) => {
         schoolId: user.schoolId,
       },
       jwtSecret,
-      { expiresIn: "7d" }
+      { expiresIn: "7d" },
     );
 
     // 6. Safe response (never return password)
@@ -364,7 +420,8 @@ router.get("/me", requireAuth, async (req, res, next) => {
       return res.status(403).json({
         success: false,
         status: "Suspended",
-        message: "Your account has been suspended. Please submit an appeal for review.",
+        message:
+          "Your account has been suspended. Please submit an appeal for review.",
       });
     }
 
@@ -412,7 +469,12 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
     const { phone, fullName, firstName, lastName, avatar } = req.body;
 
     // Security: Build update data - only allow these fields
-    const updateData: { phone?: string | null; firstName?: string; lastName?: string; avatar?: string | null } = {};
+    const updateData: {
+      phone?: string | null;
+      firstName?: string;
+      lastName?: string;
+      avatar?: string | null;
+    } = {};
 
     // Validate phone number if provided
     if (phone !== undefined && phone !== null && phone.trim() !== "") {
@@ -421,7 +483,8 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
       if (!isValid) {
         return res.status(400).json({
           success: false,
-          message: "Invalid Philippine mobile number. Must start with 09 or +639 followed by 9 digits (e.g., 09123456789).",
+          message:
+            "Invalid Philippine mobile number. Must start with 09 or +639 followed by 9 digits (e.g., 09123456789).",
         });
       }
       updateData.phone = normalizeToPhilippine09(cleanPhone);
@@ -458,7 +521,8 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
       if (!nameRegex.test(cleanFirst)) {
         return res.status(400).json({
           success: false,
-          message: "First name must only contain letters, spaces, and hyphens (numbers and special characters are not allowed).",
+          message:
+            "First name must only contain letters, spaces, and hyphens (numbers and special characters are not allowed).",
         });
       }
       updateData.firstName = cleanFirst;
@@ -475,7 +539,8 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
       if (!nameRegex.test(cleanLast)) {
         return res.status(400).json({
           success: false,
-          message: "Last name must only contain letters, spaces, and hyphens (numbers and special characters are not allowed).",
+          message:
+            "Last name must only contain letters, spaces, and hyphens (numbers and special characters are not allowed).",
         });
       }
       updateData.lastName = cleanLast;
@@ -514,7 +579,7 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
           schoolId: updatedUser.schoolId,
         },
         jwtSecret,
-        { expiresIn: "7d" }
+        { expiresIn: "7d" },
       );
     }
 
@@ -532,83 +597,110 @@ router.patch("/users/profile", requireAuth, async (req, res, next) => {
 // ==========================================
 // 4. ADMIN-ONLY REGISTER (POST /api/admin-register)
 // ==========================================
-router.post("/admin-register", requireAuth, requireRole("ADMIN", "SUPER_ADMIN"), async (req, res, next) => {
-  try {
-    const validation = adminRegisterSchema.safeParse(req.body);
-    if (!validation.success) {
-      const issue = validation.error.issues[0];
-      return res.status(400).json({
-        success: false,
-        message: issue ? `${issue.path.join(".")}: ${issue.message}` : "Validation error",
+router.post(
+  "/admin-register",
+  requireAuth,
+  requireRole("ADMIN", "SUPER_ADMIN"),
+  async (req, res, next) => {
+    try {
+      const validation = adminRegisterSchema.safeParse(req.body);
+      if (!validation.success) {
+        const issue = validation.error.issues[0];
+        return res.status(400).json({
+          success: false,
+          message: issue
+            ? `${issue.path.join(".")}: ${issue.message}`
+            : "Validation error",
+        });
+      }
+
+      const { firstName, lastName, email, schoolId, phone, password, role } =
+        validation.data;
+      const normalizedEmail = email.toLowerCase();
+      const callerRole = req.user?.role?.toUpperCase();
+      const targetRole = role.toUpperCase();
+
+      if (
+        (targetRole === "ADMIN" || targetRole === "SUPER_ADMIN") &&
+        callerRole !== "SUPER_ADMIN"
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Access Denied: Only Super Admins can create new Admin or Super Admin accounts.",
+        });
+      }
+
+      const existingEmail = await db.user.findUnique({
+        where: { email: normalizedEmail },
       });
-    }
+      if (existingEmail) {
+        return res.status(409).json({
+          success: false,
+          message: "An account with this email address already exists",
+        });
+      }
 
-    const { firstName, lastName, email, schoolId, phone, password, role } = validation.data;
-    const normalizedEmail = email.toLowerCase();
-    const callerRole = req.user?.role?.toUpperCase();
-    const targetRole = role.toUpperCase();
-
-    if ((targetRole === "ADMIN" || targetRole === "SUPER_ADMIN") && callerRole !== "SUPER_ADMIN") {
-      return res.status(403).json({
-        success: false,
-        message: "Access Denied: Only Super Admins can create new Admin or Super Admin accounts.",
+      const existingSchoolId = await db.user.findUnique({
+        where: { schoolId },
       });
-    }
+      if (existingSchoolId) {
+        return res.status(409).json({
+          success: false,
+          message: "An account with this Student/Employee ID already exists",
+        });
+      }
 
-    const existingEmail = await db.user.findUnique({
-      where: { email: normalizedEmail },
-    });
-    if (existingEmail) {
-      return res.status(409).json({
-        success: false,
-        message: "An account with this email address already exists",
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+      const newUser = await db.user.create({
+        data: {
+          firstName,
+          lastName,
+          email: normalizedEmail,
+          schoolId,
+          phone: normalizeToPhilippine09(phone),
+          password: hashedPassword,
+          role: role,
+          accountStatus: "PendingActivation",
+        },
       });
-    }
 
-    const existingSchoolId = await db.user.findUnique({
-      where: { schoolId },
-    });
-    if (existingSchoolId) {
-      return res.status(409).json({
-        success: false,
-        message: "An account with this Student/Employee ID already exists",
+      // Generate 3-day (72 hours) Activation JWT token
+      const activationToken = jwt.sign(
+        { userId: newUser.id, email: newUser.email, purpose: "account_activation" },
+        process.env.JWT_SECRET!,
+        { expiresIn: "3d" }
+      );
+
+      // Send time-sensitive activation invitation email
+      await sendAccountActivationEmail(
+        normalizedEmail,
+        newUser.firstName,
+        newUser.role,
+        activationToken
+      );
+
+      return res.status(201).json({
+        success: true,
+        message: `${role} account created successfully. An activation invitation has been sent to ${newUser.email} (valid for 3 days).`,
+        user: {
+          id: newUser.id,
+          firstName: newUser.firstName,
+          lastName: newUser.lastName,
+          email: newUser.email,
+          schoolId: newUser.schoolId,
+          phone: newUser.phone,
+          role: newUser.role,
+          accountStatus: newUser.accountStatus,
+        },
       });
+    } catch (error) {
+      next(error);
     }
-
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    const newUser = await db.user.create({
-      data: {
-        firstName,
-        lastName,
-        email: normalizedEmail,
-        schoolId,
-        phone: normalizeToPhilippine09(phone),
-        password: hashedPassword,
-        role: role,
-        accountStatus: "Active",
-      },
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: `${role} account created successfully`,
-      user: {
-        id: newUser.id,
-        firstName: newUser.firstName,
-        lastName: newUser.lastName,
-        email: newUser.email,
-        schoolId: newUser.schoolId,
-        phone: newUser.phone,
-        role: newUser.role,
-        accountStatus: newUser.accountStatus,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+  },
+);
 
 // ==========================================
 // 5. FORGOT PASSWORD - SEND OTP (POST /api/forgot-password)
@@ -636,7 +728,8 @@ router.post("/forgot-password", authLimiter, async (req, res, next) => {
     if (!user) {
       return res.status(200).json({
         success: true,
-        message: "If an account with that email exists, a verification code has been sent",
+        message:
+          "If an account with that email exists, a verification code has been sent",
       });
     }
 
@@ -666,7 +759,7 @@ router.post("/forgot-password", authLimiter, async (req, res, next) => {
     const emailSent = await sendPasswordResetEmail(
       normalizedEmail,
       otp,
-      user.firstName
+      user.firstName,
     );
 
     if (!emailSent) {
@@ -732,7 +825,8 @@ router.post("/verify-otp", authLimiter, async (req, res, next) => {
           });
           return res.status(400).json({
             success: false,
-            message: "Too many invalid attempts. This verification code has been invalidated. Please request a new one.",
+            message:
+              "Too many invalid attempts. This verification code has been invalidated. Please request a new one.",
           });
         } else {
           await db.passwordResetOtp.update({
@@ -761,7 +855,7 @@ router.post("/verify-otp", authLimiter, async (req, res, next) => {
     const resetToken = jwt.sign(
       { email: normalizedEmail, purpose: "password_reset" },
       process.env.JWT_SECRET!,
-      { expiresIn: "15m" }
+      { expiresIn: "15m" },
     );
 
     return res.status(200).json({
@@ -792,11 +886,15 @@ router.post("/reset-password", authLimiter, async (req, res, next) => {
     // Verify and decode resetToken
     let decoded: { email: string; purpose: string; exp?: number } | null = null;
     try {
-      decoded = jwt.verify(resetToken, process.env.JWT_SECRET!) as { email: string; purpose: string };
+      decoded = jwt.verify(resetToken, process.env.JWT_SECRET!) as {
+        email: string;
+        purpose: string;
+      };
     } catch (err) {
       return res.status(400).json({
         success: false,
-        message: "Reset session expired. Please request a new verification code.",
+        message:
+          "Reset session expired. Please request a new verification code.",
       });
     }
 
@@ -817,7 +915,8 @@ router.post("/reset-password", authLimiter, async (req, res, next) => {
     if (isRevoked) {
       return res.status(400).json({
         success: false,
-        message: "This reset token has already been used. Please request a new verification code.",
+        message:
+          "This reset token has already been used. Please request a new verification code.",
       });
     }
 
@@ -888,14 +987,16 @@ router.post("/change-password", requireAuth, async (req, res, next) => {
     if (!/[A-Z]/.test(newPassword)) {
       return res.status(400).json({
         success: false,
-        message: "New password must contain at least one uppercase letter (A-Z)",
+        message:
+          "New password must contain at least one uppercase letter (A-Z)",
       });
     }
 
     if (!/[a-z]/.test(newPassword)) {
       return res.status(400).json({
         success: false,
-        message: "New password must contain at least one lowercase letter (a-z)",
+        message:
+          "New password must contain at least one lowercase letter (a-z)",
       });
     }
 
@@ -924,7 +1025,10 @@ router.post("/change-password", requireAuth, async (req, res, next) => {
       });
     }
 
-    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    const isPasswordValid = await bcrypt.compare(
+      currentPassword,
+      user.password,
+    );
     if (!isPasswordValid) {
       return res.status(400).json({
         success: false,
@@ -963,8 +1067,12 @@ router.post("/logout", async (req, res, next) => {
         try {
           const jwtSecret = process.env.JWT_SECRET || "";
           const decoded = jwt.verify(token, jwtSecret) as { exp?: number };
-          const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 24 * 60 * 1000);
-          const existing = await db.revokedToken.findUnique({ where: { token } });
+          const expiresAt = decoded?.exp
+            ? new Date(decoded.exp * 1000)
+            : new Date(Date.now() + 7 * 24 * 60 * 1000);
+          const existing = await db.revokedToken.findUnique({
+            where: { token },
+          });
           if (!existing) {
             await db.revokedToken.create({
               data: { token, expiresAt },
@@ -972,10 +1080,15 @@ router.post("/logout", async (req, res, next) => {
           }
         } catch (e) {
           try {
-            const existing = await db.revokedToken.findUnique({ where: { token } });
+            const existing = await db.revokedToken.findUnique({
+              where: { token },
+            });
             if (!existing) {
               await db.revokedToken.create({
-                data: { token, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 1000) },
+                data: {
+                  token,
+                  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 1000),
+                },
               });
             }
           } catch (dbErr) {
@@ -1080,7 +1193,8 @@ router.post("/resend-verification-otp", authLimiter, async (req, res, next) => {
     if (!user) {
       return res.status(200).json({
         success: true,
-        message: "If an unverified account with this email exists, a new verification code has been sent.",
+        message:
+          "If an unverified account with this email exists, a new verification code has been sent.",
       });
     }
 
@@ -1113,6 +1227,186 @@ router.post("/resend-verification-otp", authLimiter, async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: "A new verification code has been sent to your email.",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 12. SUBMIT SUSPENSION APPEAL (POST /api/appeals)
+// ==========================================
+router.post("/appeals", authLimiter, async (req, res, next) => {
+  try {
+    const { email, subject, reason, additionalInfo } = req.body;
+    if (!email || !subject || !reason) {
+      return res.status(400).json({
+        success: false,
+        message: "Email, subject, and reason are required.",
+      });
+    }
+
+    const normalizedInput = email.trim();
+    const user = await db.user.findFirst({
+      where: {
+        OR: [
+          { email: normalizedInput.toLowerCase() },
+          { schoolId: normalizedInput },
+        ],
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "No registered account found matching this email address or ID.",
+      });
+    }
+
+    if (user.accountStatus !== "Suspended") {
+      return res.status(400).json({
+        success: false,
+        message: "This account is not currently suspended.",
+      });
+    }
+
+    // Check if user already has an appeal currently pending review
+    const existingPending = await db.appeal.findFirst({
+      where: {
+        userId: user.id,
+        status: "Pending",
+      },
+    });
+
+    if (existingPending) {
+      return res.status(400).json({
+        success: false,
+        message: `You already have an appeal under review (Reference No: ${existingPending.referenceId}). Please wait for administrator review.`,
+      });
+    }
+
+    // Generate unique reference number e.g. SP-ABC-123
+    const randomLetters = Math.random()
+      .toString(36)
+      .substring(2, 5)
+      .toUpperCase();
+    const randomNumber = Math.floor(100 + Math.random() * 900);
+    const referenceId = `SP-${randomLetters}-${randomNumber}`;
+
+    const appeal = await db.appeal.create({
+      data: {
+        referenceId,
+        userId: user.id,
+        subject: subject.trim(),
+        reason: reason.trim(),
+        additionalInfo: additionalInfo ? additionalInfo.trim() : null,
+        status: "Pending",
+      },
+    });
+
+    // Notify administrators of incoming appeal
+    try {
+      await db.notification.create({
+        data: {
+          title: "New Suspension Appeal",
+          description: `${user.firstName} ${user.lastName} (${user.role}) submitted an appeal: ${subject.trim()}`,
+          type: "alert",
+          link: "/admin/accounts",
+        },
+      });
+    } catch {
+      // Non-blocking
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Suspension appeal submitted successfully.",
+      referenceId: appeal.referenceId,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ==========================================
+// 13. ACTIVATE ACCOUNT (POST /api/activate-account)
+// ==========================================
+router.post("/activate-account", async (req, res, next) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: "Activation token is required",
+      });
+    }
+
+    let decoded: any;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET!);
+    } catch (jwtErr: any) {
+      if (jwtErr.name === "TokenExpiredError") {
+        return res.status(400).json({
+          success: false,
+          expired: true,
+          message:
+            "This invitation link has expired. Staff activation links are valid for 3 days (72 hours). Please contact your Super Administrator to request a new invitation.",
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: "Invalid activation token. Please check the link sent to your email.",
+      });
+    }
+
+    if (!decoded || decoded.purpose !== "account_activation" || !decoded.userId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid activation link purpose.",
+      });
+    }
+
+    const user = await db.user.findUnique({
+      where: { id: decoded.userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User account not found.",
+      });
+    }
+
+    if (user.accountStatus === "Active") {
+      return res.status(200).json({
+        success: true,
+        alreadyActive: true,
+        message: "Your account is already active! You may proceed to log in.",
+        user: {
+          firstName: user.firstName,
+          email: user.email,
+          role: user.role,
+        },
+      });
+    }
+
+    // Activate the user account
+    const updatedUser = await db.user.update({
+      where: { id: user.id },
+      data: {
+        accountStatus: "Active",
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Your account has been successfully activated! You may now sign in using your credentials.",
+      user: {
+        firstName: updatedUser.firstName,
+        email: updatedUser.email,
+        role: updatedUser.role,
+      },
     });
   } catch (error) {
     next(error);

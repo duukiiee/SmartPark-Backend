@@ -58,12 +58,21 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
-// Admin-only registration schema (for privileged account provisioning)
+// Admin and Guard registration schema (Employee ID required: AA-XXXXXXX, 2 letters and 7 digits)
+const employeeIdSchema = z
+  .string()
+  .trim()
+  .min(1, "Employee ID is required")
+  .regex(/^[A-Za-z]{2}-\d{7}$/, {
+    message:
+      "Invalid Employee ID format (must be AA-XXXXXXX, e.g. AD-1234567 or GD-1234567). Student IDs (XX-XXXX) are not allowed.",
+  });
+
 export const adminRegisterSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required"),
   lastName: z.string().trim().min(1, "Last name is required"),
   email: z.string().trim().email("Invalid email address"),
-  schoolId: schoolIdSchema,
+  schoolId: employeeIdSchema,
   phone: philippinePhoneSchema,
   password: z.string().min(6, "Password must be at least 6 characters"),
   role: z.enum(["GUARD", "ADMIN", "SUPER_ADMIN"]),

@@ -1,6 +1,10 @@
 import { Router } from "express";
 import { db } from "../prisma/db.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
+import {
+  sendIncidentReportNoticeEmail,
+  sendIncidentReportRejectionEmail,
+} from "../utils/email.js";
 
 export const adminIncidentRoutes = Router();
 export const publicIncidentRoutes = Router();
@@ -97,18 +101,26 @@ adminIncidentRoutes.get("/", async (req, res, next) => {
       }),
     ]);
 
-    // Targeted vehicle lookup for only the currently displayed incidents (at most 10 rows)
-    const plateList = Array.from(
+    // Targeted vehicle lookup with flexible plate formatting (handles hyphens, spaces, casing)
+    const plateVariants = Array.from(
       new Set(
-        incidents
-          .map((i) => i.plateNumber?.trim().toUpperCase())
-          .filter(Boolean) as string[]
+        incidents.flatMap((i) => {
+          if (!i.plateNumber) return [];
+          const raw = i.plateNumber.trim();
+          const clean = raw.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+          return [raw, clean].filter(Boolean);
+        })
       )
     );
 
-    const matchedVehicles = plateList.length > 0
+    const matchedVehicles = plateVariants.length > 0
       ? await db.vehicle.findMany({
-          where: { plateNumber: { in: plateList } },
+          where: {
+            OR: [
+              { plateNumber: { in: plateVariants } },
+              ...plateVariants.map((p) => ({ plateNumber: { contains: p, mode: "insensitive" as const } })),
+            ],
+          },
           include: {
             user: {
               select: {
@@ -125,7 +137,9 @@ adminIncidentRoutes.get("/", async (req, res, next) => {
     const vehicleMap = new Map<string, any>();
     matchedVehicles.forEach((v) => {
       if (v.plateNumber) {
-        vehicleMap.set(v.plateNumber.toUpperCase().replace(/\s+/g, ""), v);
+        const cleanVPlate = v.plateNumber.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+        vehicleMap.set(cleanVPlate, v);
+        vehicleMap.set(v.plateNumber.trim().toUpperCase(), v);
       }
     });
 
@@ -143,8 +157,9 @@ adminIncidentRoutes.get("/", async (req, res, next) => {
 
     // Format incidents for frontend table
     const formattedIncidents = incidents.map((inc) => {
-      const cleanPlate = inc.plateNumber ? inc.plateNumber.toUpperCase().replace(/\s+/g, "") : "";
-      const matchedVehicle = vehicleMap.get(cleanPlate);
+      const rawPlate = inc.plateNumber ? inc.plateNumber.trim().toUpperCase() : "";
+      const cleanPlate = rawPlate.replace(/[^A-Za-z0-9]/g, "");
+      const matchedVehicle = vehicleMap.get(cleanPlate) || vehicleMap.get(rawPlate);
 
       let ownerName = "N/A";
       let ownerEmail = "N/A";
@@ -154,10 +169,13 @@ adminIncidentRoutes.get("/", async (req, res, next) => {
         ownerName = `${matchedVehicle.user.firstName} ${matchedVehicle.user.lastName}`;
         ownerEmail = matchedVehicle.user.email || "N/A";
         ownerPhone = matchedVehicle.user.phone || "N/A";
-      } else if (defaultOwnersMap[cleanPlate]) {
-        ownerName = defaultOwnersMap[cleanPlate].ownerName;
-        ownerEmail = defaultOwnersMap[cleanPlate].ownerEmail;
-        ownerPhone = defaultOwnersMap[cleanPlate].ownerPhone;
+      } else {
+        const def = defaultOwnersMap[cleanPlate] || defaultOwnersMap[rawPlate];
+        if (def) {
+          ownerName = def.ownerName;
+          ownerEmail = def.ownerEmail;
+          ownerPhone = def.ownerPhone;
+        }
       }
 
       const submittedFormatted = inc.createdAt.toLocaleDateString("en-US", {
@@ -185,7 +203,7 @@ adminIncidentRoutes.get("/", async (req, res, next) => {
           inc.evidenceImage ||
           "https://images.unsplash.com/photo-1549317661-bd32c8ce0db2?w=600&auto=format&fit=crop&q=60",
         submitted: submittedFormatted,
-        action: inc.status === "Pending" ? "Review" : "View",
+        action: inc.status === "Pending" || inc.status === "Unidentified" ? "Review" : "View",
         rejectionReason: inc.rejectionReason,
         reviewedBy: inc.reviewedBy,
         reviewedAt: inc.reviewedAt,
@@ -244,15 +262,20 @@ adminIncidentRoutes.get("/:id", async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Incident report not found" });
     }
 
-    // Cross reference vehicle owner by plate number
+    // Cross reference vehicle owner by plate number with flexible matching
     let matchedVehicle = null;
-    if (incident.plateNumber && incident.plateNumber !== "Unknown") {
+    const rawPlate = incident.plateNumber ? incident.plateNumber.trim().toUpperCase() : "";
+    const cleanPlate = rawPlate.replace(/[^A-Za-z0-9]/g, "");
+
+    if (rawPlate && rawPlate !== "UNKNOWN") {
       matchedVehicle = await db.vehicle.findFirst({
         where: {
-          plateNumber: {
-            equals: incident.plateNumber,
-            mode: "insensitive",
-          },
+          OR: [
+            { plateNumber: { equals: rawPlate, mode: "insensitive" } },
+            { plateNumber: { equals: cleanPlate, mode: "insensitive" } },
+            { plateNumber: { contains: cleanPlate, mode: "insensitive" } },
+            { plateNumber: { contains: rawPlate, mode: "insensitive" } },
+          ],
         },
         include: {
           user: {
@@ -266,9 +289,37 @@ adminIncidentRoutes.get("/:id", async (req, res, next) => {
           },
         },
       });
+
+      if (!matchedVehicle && cleanPlate.length >= 3) {
+        const candidates = await db.vehicle.findMany({
+          where: {
+            OR: [
+              { plateNumber: { contains: cleanPlate.slice(0, 3), mode: "insensitive" } },
+              { plateNumber: { contains: cleanPlate.slice(-3), mode: "insensitive" } },
+            ],
+          },
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+                schoolId: true,
+              },
+            },
+          },
+          take: 20,
+        });
+
+        matchedVehicle =
+          candidates.find((v) => {
+            const vClean = (v.plateNumber || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+            return vClean === cleanPlate;
+          }) || null;
+      }
     }
 
-    const cleanPlate = incident.plateNumber ? incident.plateNumber.toUpperCase().replace(/\s+/g, "") : "";
     let ownerName = "N/A";
     let ownerEmail = "N/A";
     let ownerPhone = "N/A";
@@ -277,10 +328,13 @@ adminIncidentRoutes.get("/:id", async (req, res, next) => {
       ownerName = `${matchedVehicle.user.firstName} ${matchedVehicle.user.lastName}`;
       ownerEmail = matchedVehicle.user.email || "N/A";
       ownerPhone = matchedVehicle.user.phone || "N/A";
-    } else if (defaultOwnersMap[cleanPlate]) {
-      ownerName = defaultOwnersMap[cleanPlate].ownerName;
-      ownerEmail = defaultOwnersMap[cleanPlate].ownerEmail;
-      ownerPhone = defaultOwnersMap[cleanPlate].ownerPhone;
+    } else {
+      const def = defaultOwnersMap[cleanPlate] || defaultOwnersMap[rawPlate];
+      if (def) {
+        ownerName = def.ownerName;
+        ownerEmail = def.ownerEmail;
+        ownerPhone = def.ownerPhone;
+      }
     }
 
     const submittedFormatted = incident.createdAt.toLocaleDateString("en-US", {
@@ -379,6 +433,172 @@ adminIncidentRoutes.patch("/:id/review", async (req, res, next) => {
       },
     });
 
+    // ----------------------------------------------------
+    // EMAIL & NOTIFICATIONS BASED ON REVIEW DECISION
+    // ----------------------------------------------------
+    if (action === "Reviewed") {
+      // 1. Email the REPORTED VEHICLE OWNER about the verified incident
+      try {
+        const rawPlate = targetIncident.plateNumber
+          ? targetIncident.plateNumber.trim().toUpperCase()
+          : "";
+        const cleanPlate = rawPlate.replace(/[^A-Za-z0-9]/g, "");
+
+        let matchedVehicle = await db.vehicle.findFirst({
+          where: {
+            OR: [
+              { plateNumber: { equals: rawPlate, mode: "insensitive" } },
+              { plateNumber: { equals: cleanPlate, mode: "insensitive" } },
+              { plateNumber: { contains: cleanPlate, mode: "insensitive" } },
+              { plateNumber: { contains: rawPlate, mode: "insensitive" } },
+            ],
+          },
+          include: { user: true },
+        });
+
+        if (!matchedVehicle && cleanPlate.length >= 3) {
+          const candidates = await db.vehicle.findMany({
+            where: {
+              OR: [
+                { plateNumber: { contains: cleanPlate.slice(0, 3), mode: "insensitive" } },
+                { plateNumber: { contains: cleanPlate.slice(-3), mode: "insensitive" } },
+              ],
+            },
+            include: { user: true },
+            take: 25,
+          });
+
+          matchedVehicle =
+            candidates.find((v) => {
+              const vPlateClean = (v.plateNumber || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+              return vPlateClean === cleanPlate;
+            }) || null;
+        }
+
+        let ownerEmail = "";
+        let ownerFirstName = "";
+        let vehicleBrandModel =
+          targetIncident.model && targetIncident.model !== "--" ? targetIncident.model : "";
+        let vehicleColor =
+          targetIncident.color && targetIncident.color !== "--" ? targetIncident.color : "";
+
+        if (matchedVehicle?.user?.email) {
+          ownerEmail = matchedVehicle.user.email;
+          ownerFirstName = matchedVehicle.user.firstName || "Vehicle Owner";
+          vehicleBrandModel = vehicleBrandModel || `${matchedVehicle.brand} ${matchedVehicle.model}`;
+          vehicleColor = vehicleColor || matchedVehicle.color;
+        } else if (defaultOwnersMap[cleanPlate] || defaultOwnersMap[rawPlate]) {
+          const defaultOwner = defaultOwnersMap[cleanPlate] || defaultOwnersMap[rawPlate];
+          if (defaultOwner && defaultOwner.ownerEmail && defaultOwner.ownerEmail !== "N/A") {
+            ownerEmail = defaultOwner.ownerEmail;
+            ownerFirstName = defaultOwner.ownerName.split(" ")[0] || "Vehicle Owner";
+          }
+        }
+
+        if (ownerEmail) {
+          console.log(`[INCIDENT REVIEW] Sending verified report notice to vehicle owner: ${ownerEmail}...`);
+          await sendIncidentReportNoticeEmail(
+            ownerEmail,
+            ownerFirstName,
+            {
+              referenceId: targetIncident.referenceId,
+              reportType: targetIncident.reportType,
+              vehicleType: targetIncident.vehicleType,
+              plateNumber: rawPlate,
+              model: vehicleBrandModel,
+              color: vehicleColor,
+              description: targetIncident.description || "No additional description provided.",
+              createdAt: targetIncident.createdAt,
+            },
+          );
+        }
+
+        // In-app notification to the vehicle owner if registered
+        if (matchedVehicle?.userId) {
+          await db.notification.create({
+            data: {
+              userId: matchedVehicle.userId,
+              title: `Parking Incident Advisory: ${targetIncident.referenceId}`,
+              description: `An official incident report (${targetIncident.reportType}) was verified for vehicle ${rawPlate}. Please check your email for details.`,
+              type: "alert",
+              link: "/student/reports",
+              read: false,
+              createdAt: new Date(),
+            },
+          });
+        }
+
+        // In-app notification to the reporter that their report has been reviewed
+        if (targetIncident.userId) {
+          await db.notification.create({
+            data: {
+              userId: targetIncident.userId,
+              title: `Report Reviewed: ${targetIncident.referenceId}`,
+              description: `Your incident report regarding ${rawPlate} has been reviewed and verified by campus administration.`,
+              type: "info",
+              link: "/student/reports",
+              read: false,
+              createdAt: new Date(),
+            },
+          });
+        }
+      } catch (reviewErr) {
+        console.error("[INCIDENT REVIEW] Failed to send notice email to vehicle owner:", reviewErr);
+      }
+    } else if (action === "Rejected") {
+      // 2. Email the REPORTER that their incident report was rejected, with the rejection reason
+      try {
+        let reporterEmail = targetIncident.reporterEmail;
+        let reporterFirstName = targetIncident.reporterName.split(" ")[0] || "Reporter";
+
+        if (!reporterEmail && targetIncident.userId) {
+          const reporterUser = await db.user.findUnique({
+            where: { id: targetIncident.userId },
+            select: { email: true, firstName: true },
+          });
+          if (reporterUser?.email) {
+            reporterEmail = reporterUser.email;
+            reporterFirstName = reporterUser.firstName || reporterFirstName;
+          }
+        }
+
+        if (reporterEmail && reporterEmail !== "--") {
+          console.log(`[INCIDENT REJECT] Sending rejection email to reporter: ${reporterEmail}...`);
+          await sendIncidentReportRejectionEmail(
+            reporterEmail,
+            reporterFirstName,
+            {
+              referenceId: targetIncident.referenceId,
+              reportType: targetIncident.reportType,
+              vehicleType: targetIncident.vehicleType,
+              plateNumber: targetIncident.plateNumber,
+              rejectionReason: rejectionReason.trim(),
+              reviewedBy: reviewerName,
+              reviewedAt: new Date(),
+              createdAt: targetIncident.createdAt,
+            },
+          );
+        }
+
+        // In-app notification to reporter about rejection
+        if (targetIncident.userId) {
+          await db.notification.create({
+            data: {
+              userId: targetIncident.userId,
+              title: `Report Disapproved: ${targetIncident.referenceId}`,
+              description: `Your incident report for ${targetIncident.plateNumber} was disapproved. Reason: ${rejectionReason.trim()}`,
+              type: "alert",
+              link: "/student/reports",
+              read: false,
+              createdAt: new Date(),
+            },
+          });
+        }
+      } catch (rejectErr) {
+        console.error("[INCIDENT REJECT] Failed to send rejection email to reporter:", rejectErr);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: `Incident report marked as ${action} successfully.`,
@@ -421,6 +641,11 @@ publicIncidentRoutes.post("/", async (req, res, next) => {
 
     const reporterName = reporter ? `${reporter.firstName} ${reporter.lastName}` : "Anonymous Reporter";
 
+    const isOthers =
+      reportType.trim().toLowerCase() === "others" ||
+      reportType.trim().toLowerCase() === "other";
+    const initialStatus = isOthers ? "Unidentified" : "Pending";
+
     // Generate unique reference ID like INC-2026-XXXXXX with retry on collision
     let referenceId = "";
     let created = false;
@@ -443,9 +668,9 @@ publicIncidentRoutes.post("/", async (req, res, next) => {
             model: model || "--",
             plateNumber: plateNumber.trim().toUpperCase(),
             reportType,
-            description: description || "No additional description provided.",
+            description: description?.trim() || "No additional description provided.",
             evidenceImage: evidenceImage || null,
-            status: "Pending",
+            status: initialStatus,
           },
         });
         created = true;
@@ -465,7 +690,7 @@ publicIncidentRoutes.post("/", async (req, res, next) => {
       });
     }
 
-    // Notify admins & guards about the new incident report
+    // Notify admins & guards about the new incident report waiting for review
     try {
       await db.notification.create({
         data: {

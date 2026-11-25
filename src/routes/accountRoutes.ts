@@ -279,7 +279,7 @@ router.patch("/accounts/:id/status", async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Invalid account ID" });
     }
 
-    const { status: rawStatus } = req.body;
+    const { status: rawStatus, reason, durationDays, suspendedUntil, duration } = req.body;
     if (!rawStatus) {
       return res.status(400).json({ success: false, message: "Status is required" });
     }
@@ -315,9 +315,23 @@ router.patch("/accounts/:id/status", async (req, res, next) => {
       });
     }
 
+    const updateData: any = { accountStatus: status };
+    if (status === "Active") {
+      updateData.suspendedUntil = null;
+      updateData.suspensionReason = null;
+    } else if (status === "Suspended") {
+      let suspensionDate = suspendedUntil
+        ? new Date(suspendedUntil)
+        : durationDays
+          ? new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000)
+          : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      updateData.suspendedUntil = suspensionDate;
+      if (reason) updateData.suspensionReason = reason.trim();
+    }
+
     const updatedUser = await db.user.update({
       where: { id },
-      data: { accountStatus: status },
+      data: updateData,
       select: {
         id: true,
         firstName: true,
@@ -333,6 +347,29 @@ router.patch("/accounts/:id/status", async (req, res, next) => {
         updatedAt: true,
       },
     });
+
+    // Notify user via email on status changes
+    if (status === "Deactivated") {
+      sendAccountDeactivationEmail(
+        targetUser.email,
+        targetUser.firstName,
+        (reason as string)?.trim() || null,
+      ).catch((err: any) => {
+        console.error("Failed to send deactivation email:", err);
+      });
+    } else if (status === "Suspended") {
+      const suspensionDate = updateData.suspendedUntil || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      const durationText = duration || (durationDays ? `${durationDays} Days` : undefined);
+      sendAccountSuspensionEmail(
+        targetUser.email,
+        targetUser.firstName,
+        (reason as string)?.trim() || "Account suspended by administrator",
+        suspensionDate,
+        durationText,
+      ).catch((err: any) => {
+        console.error("Failed to send suspension email:", err);
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -352,19 +389,41 @@ router.patch("/accounts/:id/status", async (req, res, next) => {
 router.post("/accounts/:id/suspend", async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const { durationDays, suspendedUntil, reason } = req.body;
-    if (!reason) return res.status(400).json({ success: false, message: "Reason is required" });
-    let suspensionDate = suspendedUntil ? new Date(suspendedUntil) : new Date(Date.now() + (durationDays || 0) * 24 * 60 * 60 * 1000);
+    const { durationDays, suspendedUntil, reason, duration } = req.body;
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ success: false, message: "Reason is required" });
+    }
+
+    let suspensionDate: Date;
+    if (suspendedUntil) {
+      suspensionDate = new Date(suspendedUntil);
+    } else if (durationDays) {
+      suspensionDate = new Date(Date.now() + Number(durationDays) * 24 * 60 * 60 * 1000);
+    } else {
+      suspensionDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    }
     
     const targetUser = await db.user.findUnique({ where: { id } });
     if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
 
     const updatedUser = await db.user.update({
       where: { id },
-      data: { accountStatus: "Suspended", suspendedUntil: suspensionDate, suspensionReason: reason.trim() },
+      data: {
+        accountStatus: "Suspended",
+        suspendedUntil: suspensionDate,
+        suspensionReason: reason.trim(),
+      },
     });
 
-    sendAccountSuspensionEmail(targetUser.email, targetUser.firstName, reason.trim(), suspensionDate).catch(err => {
+    const durationText = duration || (durationDays ? `${durationDays} Days` : undefined);
+
+    sendAccountSuspensionEmail(
+      targetUser.email,
+      targetUser.firstName,
+      reason.trim(),
+      suspensionDate,
+      durationText,
+    ).catch((err: any) => {
       console.error("Failed to send suspension email:", err);
     });
 
@@ -376,12 +435,20 @@ router.post("/accounts/:id/suspend", async (req, res, next) => {
 router.post("/accounts/:id/deactivate", async (req, res, next) => {
     try {
         const id = parseInt(req.params.id, 10);
+        const { reason } = req.body || {};
         const targetUser = await db.user.findUnique({ where: { id } });
         if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
 
-        const updatedUser = await db.user.update({ where: { id }, data: { accountStatus: "Deactivated" } });
+        const updatedUser = await db.user.update({
+          where: { id },
+          data: { accountStatus: "Deactivated" },
+        });
 
-        sendAccountDeactivationEmail(targetUser.email, targetUser.firstName).catch(err => {
+        sendAccountDeactivationEmail(
+          targetUser.email,
+          targetUser.firstName,
+          reason ? String(reason).trim() : null,
+        ).catch((err: any) => {
           console.error("Failed to send deactivation email:", err);
         });
 
@@ -395,9 +462,26 @@ router.post("/accounts/:id/set-status", async (req, res, next) => {
         const id = parseInt(req.params.id, 10);
         const status = normalizeAccountStatus(req.body.status);
         if (!status) return res.status(400).json({ success: false, message: "Invalid account status" });
+        
+        const targetUser = await db.user.findUnique({ where: { id } });
+        if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
+
         const data: any = { accountStatus: status };
-        if (status === "Active") { data.suspendedUntil = null; data.suspensionReason = null; }
+        if (status === "Active") {
+          data.suspendedUntil = null;
+          data.suspensionReason = null;
+        }
         const updatedUser = await db.user.update({ where: { id }, data });
+
+        if (status === "Deactivated") {
+          sendAccountDeactivationEmail(
+            targetUser.email,
+            targetUser.firstName,
+            req.body.reason ? String(req.body.reason).trim() : null,
+          ).catch((err: any) => {
+            console.error("Failed to send deactivation email:", err);
+          });
+        }
         return res.status(200).json({ success: true, account: updatedUser });
     } catch (error) { next(error); }
 });

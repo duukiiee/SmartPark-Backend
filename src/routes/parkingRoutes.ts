@@ -146,6 +146,23 @@ adminParkingRoutes.put("/capacity", async (req, res, next) => {
 
     const parsedCar = parseInt(carCapacity, 10);
     const parsedMoto = parseInt(motorcycleCapacity, 10);
+    const MAX_CAPACITY = 10000;
+
+    // Count currently parked vehicles to ensure capacity doesn't drop below occupancy
+    const [carParked, motorcycleParked] = await Promise.all([
+      db.parkingLog.count({
+        where: {
+          OR: [{ status: "Currently Parked" }, { exitTime: null }],
+          vehicle: { type: "Car" },
+        },
+      }),
+      db.parkingLog.count({
+        where: {
+          OR: [{ status: "Currently Parked" }, { exitTime: null }],
+          vehicle: { type: "Motorcycle" },
+        },
+      }),
+    ]);
 
     if (isNaN(parsedCar) || parsedCar <= 0) {
       return res.status(400).json({
@@ -155,10 +172,42 @@ adminParkingRoutes.put("/capacity", async (req, res, next) => {
       });
     }
 
+    if (parsedCar > MAX_CAPACITY) {
+      return res.status(400).json({
+        success: false,
+        message: `Car capacity cannot exceed ${MAX_CAPACITY.toLocaleString()} spaces.`,
+        field: "car",
+      });
+    }
+
+    if (parsedCar < carParked) {
+      return res.status(400).json({
+        success: false,
+        message: `Car capacity cannot be lower than the currently parked cars (${carParked}).`,
+        field: "car",
+      });
+    }
+
     if (isNaN(parsedMoto) || parsedMoto <= 0) {
       return res.status(400).json({
         success: false,
         message: "Motorcycle capacity must be a positive whole number greater than 0.",
+        field: "motorcycle",
+      });
+    }
+
+    if (parsedMoto > MAX_CAPACITY) {
+      return res.status(400).json({
+        success: false,
+        message: `Motorcycle capacity cannot exceed ${MAX_CAPACITY.toLocaleString()} spaces.`,
+        field: "motorcycle",
+      });
+    }
+
+    if (parsedMoto < motorcycleParked) {
+      return res.status(400).json({
+        success: false,
+        message: `Motorcycle capacity cannot be lower than the currently parked motorcycles (${motorcycleParked}).`,
         field: "motorcycle",
       });
     }

@@ -201,6 +201,15 @@ router.patch("/accounts/:id", async (req, res, next) => {
     const isRegularAdmin = currentUser.role?.toUpperCase() === "ADMIN";
     const targetRole = targetUser.role?.toUpperCase();
 
+    /*
+    if (targetRole === \"USER\") {
+      return res.status(403).json({
+        success: false,
+        message: \"Access denied. User profiles cannot be edited by administrators. Users manage their own profiles.\",
+      });
+    }
+    */
+
     if (targetRole === "USER") {
       return res.status(403).json({
         success: false,

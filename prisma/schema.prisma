@@ -45,6 +45,9 @@ model Vehicle {
   year               String
   status             String    @default("Pending") // "Pending", "Approved", "Rejected", "Inactive"
   rejectionReason    String?
+  ownerName          String?   // Added for high-performance gate registration lookup
+  idType             String?   // Added for high-performance gate registration lookup
+  idNumber           String?   // Added for high-performance gate registration lookup
   qrCode             String?   @unique
   registrationSource String    @default("Online")
   photo              String?   @db.Text
@@ -56,6 +59,9 @@ model Vehicle {
 
   @@index([userId])
   @@index([status, createdAt])
+  @@index([registrationSource, status])
+  @@index([plateNumber])
+  @@index([qrCode])
   @@map("vehicle")
 }
 

@@ -93,7 +93,7 @@ studentVehicleRoutes.get("/my-vehicles", async (req, res, next) => {
 studentVehicleRoutes.post("/", async (req, res, next) => {
   try {
     const userId = req.user!.id;
-    const { type, plateNumber, brand, model, color, year, photo } = req.body;
+    const { type, plateNumber, brand, model, color, year, photo, claimGateVehicle } = req.body;
 
     if (!type || !plateNumber || !brand || !model || !color || !year) {
       return res.status(400).json({
@@ -107,10 +107,73 @@ studentVehicleRoutes.post("/", async (req, res, next) => {
     // Check if plateNumber already exists
     const existingVehicle = await db.vehicle.findUnique({
       where: { plateNumber: normalizedPlate },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true } },
+      },
     });
 
     if (existingVehicle) {
-      // If currently Approved or Pending, do not allow duplicate active registration
+      // SCENARIO 1: Existing vehicle was registered at the Gate (Visitor / walk-in)
+      if (existingVehicle.registrationSource === "Gate") {
+        let gateOwnerName = "Gate Visitor";
+        if (existingVehicle.rejectionReason) {
+          try {
+            const meta = JSON.parse(existingVehicle.rejectionReason);
+            if (meta.ownerName) gateOwnerName = meta.ownerName;
+          } catch {}
+        }
+
+        // If user hasn't explicitly confirmed linking/claiming this gate vehicle, ask them first!
+        if (!claimGateVehicle) {
+          return res.status(409).json({
+            success: false,
+            gateVehicleDetected: true,
+            plateNumber: normalizedPlate,
+            gateOwner: gateOwnerName,
+            existingVehicleId: existingVehicle.id,
+            message: `Ang sasakyang ito (${normalizedPlate}) ay dating naitala sa Gate Registration sa ilalim ng pangalang "${gateOwnerName}". Iyo ba ang sasakyang ito? I-confirm para ma-link at mailipat ito sa iyong SmartPark account!`,
+          });
+        }
+
+        // User confirmed claiming gate vehicle -> Transfer ownership to this signed-up user!
+        const linkedVehicle = await db.vehicle.update({
+          where: { id: existingVehicle.id },
+          data: {
+            userId,
+            registrationSource: "Online",
+            status: "Pending", // Awaiting administrator document verification
+            type: type.trim(),
+            brand: brand.trim(),
+            model: model.trim(),
+            color: color.trim(),
+            year: year.toString().trim(),
+            photo: photo || existingVehicle.photo || null,
+            rejectionReason: null, // Clear visitor metadata
+          },
+        });
+
+        // Notify Admin that a gate-registered vehicle has been claimed by a registered user
+        const claimingUser = await db.user.findUnique({ where: { id: userId } });
+        const claimantName = claimingUser ? `${claimingUser.firstName} ${claimingUser.lastName}` : "User";
+        await db.notification.create({
+          data: {
+            title: "Gate Vehicle Claimed & Registered",
+            description: `${linkedVehicle.brand} ${linkedVehicle.model} (${linkedVehicle.plateNumber}) na dating Gate Registered ay inangkin at inirehistro ni ${claimantName}. Nakabinbin para sa pagsusuri.`,
+            type: "update",
+            link: `/admin/vehicles`,
+            read: false,
+          },
+        });
+
+        return res.status(200).json({
+          success: true,
+          linked: true,
+          message: `Matagumpay na na-link ang sasakyang ${normalizedPlate} sa iyong SmartPark account! Ito ay kasalukuyang nakabinbin para sa pagsusuri ng Administrator.`,
+          vehicle: linkedVehicle,
+        });
+      }
+
+      // SCENARIO 2: If currently Approved or Pending under another online account
       if (existingVehicle.status === "Approved" || existingVehicle.status === "Pending") {
         return res.status(400).json({
           success: false,
@@ -515,32 +578,59 @@ adminVehicleRoutes.get("/", async (req, res, next) => {
       db.vehicle.count({ where: { type: "Motorcycle" } }),
     ]);
 
-    const vehicles = rawVehicles.map((v) => ({
-      id: v.id,
-      plateNo: v.plateNumber,
-      plateNumber: v.plateNumber,
-      owner: `${v.user.lastName}, ${v.user.firstName}`,
-      ownerFullName: `${v.user.firstName} ${v.user.lastName}`,
-      type: v.type,
-      brand: v.brand,
-      model: v.model,
-      brandModel: `${v.brand} ${v.model}`,
-      color: v.color,
-      year: v.year,
-      regDate: v.createdAt.toLocaleDateString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }),
-      status: v.status,
-      qrCode: v.qrCode,
-      registrationSource: v.registrationSource,
-      approvedAt: v.approvedAt,
-      createdAt: v.createdAt,
-      updatedAt: v.updatedAt,
-      photo: v.photo,
-      user: v.user,
-    }));
+    const vehicles = rawVehicles.map((v) => {
+      let owner = v.user ? `${v.user.lastName}, ${v.user.firstName}` : "Gate Visitor";
+      let ownerFullName = v.user ? `${v.user.firstName} ${v.user.lastName}` : "Gate Visitor";
+      let email = v.user?.email || "--";
+      let phone = v.user?.phone || "--";
+      let idNo = v.user?.schoolId || "--";
+
+      if (v.registrationSource === "Gate") {
+        email = "N/A (Gate Registration)";
+        phone = "N/A (Gate Registration)";
+        idNo = "N/A";
+        if (v.rejectionReason) {
+          try {
+            const meta = JSON.parse(v.rejectionReason);
+            if (meta.ownerName) {
+              owner = meta.ownerName;
+              ownerFullName = meta.ownerName;
+            }
+            if (meta.idNumber) idNo = meta.idNumber;
+          } catch {}
+        }
+      }
+
+      return {
+        id: v.id,
+        plateNo: v.plateNumber,
+        plateNumber: v.plateNumber,
+        owner,
+        ownerFullName,
+        email,
+        phone,
+        idNo,
+        type: v.type,
+        brand: v.brand,
+        model: v.model,
+        brandModel: `${v.brand} ${v.model}`,
+        color: v.color,
+        year: v.year,
+        regDate: v.createdAt.toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        }),
+        status: v.status,
+        qrCode: v.qrCode,
+        registrationSource: v.registrationSource,
+        approvedAt: v.approvedAt,
+        createdAt: v.createdAt,
+        updatedAt: v.updatedAt,
+        photo: v.photo,
+        user: v.registrationSource === "Gate" ? null : v.user,
+      };
+    });
 
     const totalPages = Math.ceil(total / limit) || 1;
 
@@ -569,25 +659,32 @@ adminVehicleRoutes.get("/registrations", async (req, res, next) => {
     const search = (req.query.search as string)?.trim() || "";
     const filter = (req.query.filter as string) || "All";
 
-    const where: any = {};
+    // Strictly EXCLUDE Gate Registrations: this module is only for online student/staff registrations
+    const where: any = {
+      registrationSource: { not: "Gate" },
+    };
 
     if (filter && filter !== "All" && filter !== "All Vehicles") {
       where.status = filter;
     }
 
     if (search) {
-      where.OR = [
-        { plateNumber: { contains: search, mode: "insensitive" } },
-        { brand: { contains: search, mode: "insensitive" } },
-        { model: { contains: search, mode: "insensitive" } },
+      where.AND = [
         {
-          user: {
-            OR: [
-              { firstName: { contains: search, mode: "insensitive" } },
-              { lastName: { contains: search, mode: "insensitive" } },
-              { schoolId: { contains: search, mode: "insensitive" } },
-            ],
-          },
+          OR: [
+            { plateNumber: { contains: search, mode: "insensitive" } },
+            { brand: { contains: search, mode: "insensitive" } },
+            { model: { contains: search, mode: "insensitive" } },
+            {
+              user: {
+                OR: [
+                  { firstName: { contains: search, mode: "insensitive" } },
+                  { lastName: { contains: search, mode: "insensitive" } },
+                  { schoolId: { contains: search, mode: "insensitive" } },
+                ],
+              },
+            },
+          ],
         },
       ];
     }
@@ -609,14 +706,14 @@ adminVehicleRoutes.get("/registrations", async (req, res, next) => {
           },
         },
       }),
-      db.vehicle.count(),
-      db.vehicle.count({ where: { status: "Pending" } }),
-      db.vehicle.count({ where: { status: "Approved" } }),
+      db.vehicle.count({ where: { registrationSource: { not: "Gate" } } }),
+      db.vehicle.count({ where: { registrationSource: { not: "Gate" }, status: "Pending" } }),
+      db.vehicle.count({ where: { registrationSource: { not: "Gate" }, status: "Approved" } }),
     ]);
 
     const registrations = rawRegistrations.map((v) => ({
       id: v.id,
-      owner: `${v.user.firstName} ${v.user.lastName}`,
+      owner: v.user ? `${v.user.firstName} ${v.user.lastName}` : "Registered User",
       vehicleType: `${v.brand} ${v.model} (${v.type})`,
       type: v.type,
       brand: v.brand,
@@ -632,9 +729,9 @@ adminVehicleRoutes.get("/registrations", async (req, res, next) => {
         year: "numeric",
       }),
       createdAt: v.createdAt,
-      email: v.user.email,
-      phone: v.user.phone || "--",
-      idNo: v.user.schoolId,
+      email: v.user?.email || "--",
+      phone: v.user?.phone || "--",
+      idNo: v.user?.schoolId || "--",
       rejectionReason: v.rejectionReason,
       qrCode: v.qrCode,
       registrationSource: v.registrationSource,
@@ -685,6 +782,35 @@ adminVehicleRoutes.get("/:id", async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Vehicle not found" });
     }
 
+    let ownerFullName = "Gate Visitor";
+    let studentId = "N/A";
+    let email = "N/A (Gate Registration)";
+    let phoneNumber = "N/A (Gate Registration)";
+    let idType = "Driver's License / Valid ID";
+    let idNumber = "N/A";
+    const isGateVisitor = vehicle.registrationSource === "Gate";
+
+    if (isGateVisitor) {
+      if (vehicle.rejectionReason) {
+        try {
+          const meta = JSON.parse(vehicle.rejectionReason);
+          if (meta.ownerName) ownerFullName = meta.ownerName;
+          if (meta.idType) idType = meta.idType;
+          if (meta.idNumber) {
+            idNumber = meta.idNumber;
+            studentId = meta.idNumber;
+          }
+        } catch {}
+      }
+    } else if (vehicle.user) {
+      ownerFullName = `${vehicle.user.firstName} ${vehicle.user.lastName}`.trim();
+      studentId = vehicle.user.schoolId || "--";
+      email = vehicle.user.email || "--";
+      phoneNumber = vehicle.user.phone || "--";
+      idType = "Student / School ID";
+      idNumber = vehicle.user.schoolId || "--";
+    }
+
     const formattedVehicle = {
       id: vehicle.id,
       plateNo: vehicle.plateNumber,
@@ -711,12 +837,15 @@ adminVehicleRoutes.get("/:id", async (req, res, next) => {
       photo: vehicle.photo,
       rejectionReason: vehicle.rejectionReason,
       owner: {
-        fullName: `${vehicle.user.firstName} ${vehicle.user.lastName}`,
-        studentId: vehicle.user.schoolId,
-        email: vehicle.user.email,
-        phoneNumber: vehicle.user.phone || "--",
+        fullName: ownerFullName,
+        studentId,
+        email,
+        phoneNumber,
+        idType,
+        idNumber,
+        isGateVisitor,
       },
-      user: vehicle.user,
+      user: isGateVisitor ? null : vehicle.user,
     };
 
     return res.status(200).json({

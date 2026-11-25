@@ -162,6 +162,8 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
     const limit = parseInt(req.query.limit as string, 10) || 20;
     const skip = (page - 1) * limit;
 
+    const isGuard = req.user?.role === "GUARD";
+
     const whereCondition: any = {};
 
     if (tab === "unread") {
@@ -179,9 +181,62 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
       ];
     }
 
+    // Role-based notification isolation
+    if (isGuard) {
+      // Guards only receive operational gate, parking capacity, approved pass alerts, and security alerts.
+      // Filter out admin tasks (admin document verification, pending admin incident reviews, appeals, etc.)
+      whereCondition.AND = [
+        ...(whereCondition.AND || []),
+        {
+          NOT: [
+            { title: { contains: "Vehicle Registration Pending", mode: "insensitive" } },
+            { title: { contains: "New Vehicle Registration", mode: "insensitive" } },
+            { title: { contains: "New Incident Report", mode: "insensitive" } },
+            { title: { contains: "New Suspension Appeal", mode: "insensitive" } },
+            { description: { contains: "Waiting for security/admin review", mode: "insensitive" } },
+            { description: { contains: "Awaiting document verification", mode: "insensitive" } },
+          ],
+        },
+        {
+          OR: [
+            { link: { contains: "/guard" } },
+            { title: { contains: "Parking", mode: "insensitive" } },
+            { title: { contains: "Pass Approved", mode: "insensitive" } },
+            { title: { contains: "Gate", mode: "insensitive" } },
+            { type: "warning" },
+          ],
+        },
+      ];
+    }
+
+    const unreadWhere: any = { read: false };
+    if (isGuard) {
+      unreadWhere.AND = [
+        {
+          NOT: [
+            { title: { contains: "Vehicle Registration Pending", mode: "insensitive" } },
+            { title: { contains: "New Vehicle Registration", mode: "insensitive" } },
+            { title: { contains: "New Incident Report", mode: "insensitive" } },
+            { title: { contains: "New Suspension Appeal", mode: "insensitive" } },
+            { description: { contains: "Waiting for security/admin review", mode: "insensitive" } },
+            { description: { contains: "Awaiting document verification", mode: "insensitive" } },
+          ],
+        },
+        {
+          OR: [
+            { link: { contains: "/guard" } },
+            { title: { contains: "Parking", mode: "insensitive" } },
+            { title: { contains: "Pass Approved", mode: "insensitive" } },
+            { title: { contains: "Gate", mode: "insensitive" } },
+            { type: "warning" },
+          ],
+        },
+      ];
+    }
+
     const [totalUnread, totalCount, notificationsList] = await Promise.all([
-      db.notification.count({ where: { read: false } }),
-      db.notification.count(),
+      db.notification.count({ where: unreadWhere }),
+      db.notification.count({ where: isGuard ? { AND: unreadWhere.AND } : {} }),
       db.notification.findMany({
         where: whereCondition,
         orderBy: { createdAt: "desc" },
@@ -189,8 +244,6 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
         take: limit,
       }),
     ]);
-
-    const isGuard = req.user?.role === "GUARD";
 
     const formattedNotifications = notificationsList.map((n) => {
       let link = n.link || null;

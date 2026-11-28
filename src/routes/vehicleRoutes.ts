@@ -885,6 +885,21 @@ adminVehicleRoutes.post("/:id/approve", async (req, res, next) => {
       },
     });
 
+    // Notify Security Guards that a newly approved vehicle pass is now active for gate entry
+    try {
+      await db.notification.create({
+        data: {
+          title: `Vehicle Pass Approved: ${updatedVehicle.plateNumber}`,
+          description: `${updatedVehicle.brand} ${updatedVehicle.model} (${updatedVehicle.plateNumber}) pass is approved and active for campus entry.`,
+          type: "update",
+          link: "/guard/registration",
+          read: false,
+        },
+      });
+    } catch (notifErr) {
+      console.error("Failed to emit guard notification for approved vehicle:", notifErr);
+    }
+
     return res.status(200).json({
       success: true,
       message: "Vehicle approved successfully",
@@ -978,6 +993,22 @@ adminVehicleRoutes.patch("/:id/status", async (req, res, next) => {
         ...(targetStatus === "Approved" ? { approvedAt: vehicle.approvedAt || new Date(), qrCode } : {}),
       },
     });
+
+    if (targetStatus === "Approved" && vehicle.status !== "Approved") {
+      try {
+        await db.notification.create({
+          data: {
+            title: `Vehicle Pass Approved: ${updatedVehicle.plateNumber}`,
+            description: `${updatedVehicle.brand} ${updatedVehicle.model} (${updatedVehicle.plateNumber}) pass is approved and active for campus entry.`,
+            type: "update",
+            link: "/guard/registration",
+            read: false,
+          },
+        });
+      } catch (notifErr) {
+        console.error("Failed to emit guard notification for approved vehicle:", notifErr);
+      }
+    }
 
     return res.status(200).json({
       success: true,

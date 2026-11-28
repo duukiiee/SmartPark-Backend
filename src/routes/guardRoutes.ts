@@ -18,6 +18,7 @@ import {
   vehicleParamSchema,
 } from "../validations/guardValidation.js";
 import { getGateVehiclesOptimized } from "../utils/queryOptimization.js";
+import { getRoleNotificationCriteria } from "./notificationRoutes.js";
 
 export const guardRoutes = Router();
 
@@ -235,7 +236,10 @@ guardRoutes.get(
       const paginationArgs = {
         where,
         take: limit,
-        orderBy: { entryTime: "desc" as const },
+        orderBy:
+          tab === "exits"
+            ? ({ exitTime: "desc" } as const)
+            : ({ entryTime: "desc" } as const),
         include: {
           vehicle: {
             include: {
@@ -254,60 +258,89 @@ guardRoutes.get(
       const logs = await db.parkingLog.findMany(queryArgs);
 
       // 4. Map records according to active tab
-      const records = logs.map((log) => {
-        const owner = extractOwnerName(log.vehicle);
-        const plate = log.vehicle?.plateNumber || "N/A";
-        const vType = (
-          log.vehicle?.type === "Motorcycle" ? "Motorcycle" : "Car"
-        ) as "Car" | "Motorcycle";
-        const entryDate = new Date(log.entryTime);
-        const exitDate = log.exitTime ? new Date(log.exitTime) : null;
+      let records: any[] = [];
 
-        if (tab === "history") {
-          const isExit = !!exitDate;
-          const eventDate = isExit ? exitDate : entryDate;
-          return {
-            id: String(log.id),
+      if (tab === "history") {
+        const historyEvents: any[] = [];
+        logs.forEach((log) => {
+          const owner = extractOwnerName(log.vehicle);
+          const plate = log.vehicle?.plateNumber || "N/A";
+          const vType = (
+            log.vehicle?.type === "Motorcycle" ? "Motorcycle" : "Car"
+          ) as "Car" | "Motorcycle";
+          const entryDate = new Date(log.entryTime);
+          const exitDate = log.exitTime ? new Date(log.exitTime) : null;
+
+          if (exitDate) {
+            historyEvents.push({
+              id: `${log.id}-exit`,
+              owner,
+              plate,
+              vehicleType: vType,
+              action: "EXIT" as const,
+              timeOrDate: formatHistoryDate(exitDate),
+              rawDate: exitDate.toISOString().split("T")[0],
+              timestamp: exitDate.getTime(),
+              result: "GRANTED" as const,
+            });
+          }
+
+          historyEvents.push({
+            id: `${log.id}-entry`,
             owner,
             plate,
             vehicleType: vType,
-            action: isExit ? ("EXIT" as const) : ("ENTRY" as const),
-            timeOrDate: formatHistoryDate(eventDate),
-            rawDate: eventDate.toISOString().split("T")[0],
+            action: "ENTRY" as const,
+            timeOrDate: formatHistoryDate(entryDate),
+            rawDate: entryDate.toISOString().split("T")[0],
+            timestamp: entryDate.getTime(),
             result: "GRANTED" as const,
-          };
-        }
+          });
+        });
 
-        if (tab === "exits") {
+        historyEvents.sort((a, b) => b.timestamp - a.timestamp);
+        records = historyEvents;
+      } else {
+        records = logs.map((log) => {
+          const owner = extractOwnerName(log.vehicle);
+          const plate = log.vehicle?.plateNumber || "N/A";
+          const vType = (
+            log.vehicle?.type === "Motorcycle" ? "Motorcycle" : "Car"
+          ) as "Car" | "Motorcycle";
+          const entryDate = new Date(log.entryTime);
+          const exitDate = log.exitTime ? new Date(log.exitTime) : null;
+
+          if (tab === "exits") {
+            return {
+              id: String(log.id),
+              owner,
+              plate,
+              vehicleType: vType,
+              timeOrDate: exitDate ? formatTimeOnly(exitDate) : "--",
+              rawDate: exitDate ? exitDate.toISOString().split("T")[0] : "",
+              duration:
+                log.duration ||
+                (exitDate ? formatDuration(entryDate, exitDate) : "--"),
+              guard: log.guardName || "Guard Santos",
+            };
+          }
+
+          // Default: "entries" or "inside"
           return {
             id: String(log.id),
             owner,
             plate,
             vehicleType: vType,
-            timeOrDate: exitDate ? formatTimeOnly(exitDate) : "--",
-            rawDate: exitDate ? exitDate.toISOString().split("T")[0] : "",
-            duration:
-              log.duration ||
-              (exitDate ? formatDuration(entryDate, exitDate) : "--"),
+            timeOrDate: formatTimeOnly(entryDate),
+            rawDate: entryDate.toISOString().split("T")[0],
+            registrationSource:
+              log.vehicle?.registrationSource?.toLowerCase() === "gate"
+                ? "Gate registration"
+                : "User registration",
             guard: log.guardName || "Guard Santos",
           };
-        }
-
-        // Default: "entries" or "inside"
-        return {
-          id: String(log.id),
-          owner,
-          plate,
-          vehicleType: vType,
-          timeOrDate: formatTimeOnly(entryDate),
-          rawDate: entryDate.toISOString().split("T")[0],
-          registrationSource:
-            log.vehicle?.registrationSource?.toLowerCase() === "gate"
-              ? "Gate registration"
-              : "User registration",
-          guard: log.guardName || "Guard Santos",
-        };
-      });
+        });
+      }
 
       const nextCursor =
         logs.length === limit && logs.length > 0
@@ -547,8 +580,8 @@ guardRoutes.get(
         now.getDate(),
       );
 
-      // Combined live metrics for today using efficient aggregated queries
-      const [parkingStats, unreadNotifications, setting] = await Promise.all([
+        const guardCriteria = getRoleNotificationCriteria("GUARD");
+        const [parkingStats, unreadNotifications, setting] = await Promise.all([
         db.$queryRaw<
           Array<{
             today_entries: bigint;
@@ -565,36 +598,7 @@ guardRoutes.get(
         db.notification.count({
           where: {
             read: false,
-            NOT: [
-              {
-                title: {
-                  contains: "Vehicle Registration Pending",
-                  mode: "insensitive",
-                },
-              },
-              {
-                title: {
-                  contains: "New Vehicle Registration",
-                  mode: "insensitive",
-                },
-              },
-              {
-                title: { contains: "New Incident Report", mode: "insensitive" },
-              },
-              {
-                title: {
-                  contains: "New Suspension Appeal",
-                  mode: "insensitive",
-                },
-              },
-            ],
-            OR: [
-              { link: { contains: "/guard" } },
-              { title: { contains: "Parking", mode: "insensitive" } },
-              { title: { contains: "Pass Approved", mode: "insensitive" } },
-              { title: { contains: "Gate", mode: "insensitive" } },
-              { type: "warning" },
-            ],
+            ...guardCriteria,
           },
         }),
         db.parkingSetting.findFirst(),
@@ -938,10 +942,14 @@ guardRoutes.post(
             );
           }
 
-          // For gate-registered vehicles, check registration age (max 24 hours)
+          // For gate-registered vehicles, check registration age (max 24 hours from approval/registration)
           if (targetVehicle.registrationSource === "Gate") {
+            const activeTimestamp =
+              targetVehicle.approvedAt ||
+              targetVehicle.updatedAt ||
+              targetVehicle.createdAt;
             const registrationAge =
-              Date.now() - new Date(targetVehicle.createdAt).getTime();
+              Date.now() - new Date(activeTimestamp).getTime();
             const MAX_GATE_REGISTRATION_AGE = 24 * 60 * 60 * 1000; // 24 hours
 
             if (registrationAge > MAX_GATE_REGISTRATION_AGE) {
@@ -1064,6 +1072,22 @@ guardRoutes.post(
         });
       }
       if (err.message === "PARKING_FULL") {
+        try {
+          const existingFullWarning = await db.notification.findFirst({
+            where: { title: "Parking Lot Is Full", read: false },
+          });
+          if (!existingFullWarning) {
+            await db.notification.create({
+              data: {
+                title: "Parking Lot Is Full",
+                description: "Parking facility has reached full capacity. Entries are currently queued or restricted.",
+                type: "warning",
+                link: "/guard/monitoring",
+                read: false,
+              },
+            });
+          }
+        } catch {}
         return res.status(400).json({
           success: false,
           message: "Parking lot is at full capacity. Entry denied.",
@@ -1483,6 +1507,7 @@ guardRoutes.post(
               color: color.trim(),
               status: "Approved",
               approvedAt: new Date(),
+              createdAt: new Date(),
               registrationSource: "Gate",
               ownerName: ownerName.trim(),
               idType: idType ? idType.trim() : "Driver's License",
@@ -1534,6 +1559,21 @@ guardRoutes.post(
         return { targetVehicle, entryLog, guardName };
       });
 
+      // Notify administrators about visitor vehicle registered at the gate
+      try {
+        await db.notification.create({
+          data: {
+            title: `New Gate Vehicle Registered: ${result.targetVehicle.plateNumber}`,
+            description: `${result.targetVehicle.brand} ${result.targetVehicle.model} (${result.targetVehicle.plateNumber}) was registered at the gate by ${result.guardName} for visitor ${ownerName.trim()}.`,
+            type: "update",
+            link: "/admin/vehicles",
+            read: false,
+          },
+        });
+      } catch (notifErr) {
+        console.error("Failed to emit admin notification for gate registration:", notifErr);
+      }
+
       return res.status(201).json({
         success: true,
         message: "Gate registration and campus entry recorded successfully.",
@@ -1546,6 +1586,22 @@ guardRoutes.post(
       });
     } catch (err: any) {
       if (err.message === "PARKING_FULL") {
+        try {
+          const existingFullWarning = await db.notification.findFirst({
+            where: { title: "Parking Lot Is Full", read: false },
+          });
+          if (!existingFullWarning) {
+            await db.notification.create({
+              data: {
+                title: "Parking Lot Is Full",
+                description: "Parking facility has reached full capacity. Entries are currently queued or restricted.",
+                type: "warning",
+                link: "/guard/monitoring",
+                read: false,
+              },
+            });
+          }
+        } catch {}
         return res.status(400).json({
           success: false,
           message:

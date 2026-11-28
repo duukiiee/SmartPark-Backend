@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db } from "../prisma/db.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
+import { getRoleNotificationCriteria } from "./notificationRoutes.js";
 
 export const adminDashboardRoutes = Router();
 
@@ -314,10 +315,11 @@ adminDashboardRoutes.get("/", async (req, res, next) => {
  */
 adminDashboardRoutes.get("/sidebar-counts", async (req, res, next) => {
   try {
+    const adminCriteria = getRoleNotificationCriteria(req.user?.role || "ADMIN");
     const [pendingVehicles, pendingIncidents, unreadNotifications] = await Promise.all([
       db.vehicle.count({ where: { status: "Pending" } }),
       db.incident.count({ where: { status: "Pending" } }),
-      db.notification.count({ where: { read: false } }),
+      db.notification.count({ where: { read: false, ...adminCriteria } }),
     ]);
 
     return res.status(200).json({

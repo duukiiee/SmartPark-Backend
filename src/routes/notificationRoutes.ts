@@ -149,6 +149,78 @@ async function syncSystemNotifications() {
 }
 
 /**
+ * Role-based notification isolation criteria:
+ * Ensures Admin and Guard have 100% separate notification streams.
+ */
+export function getRoleNotificationCriteria(role: string) {
+  if (role === "GUARD") {
+    return {
+      AND: [
+        {
+          userId: null, // Guard only receives system broadcast notifications, not individual student alerts
+        },
+        {
+          NOT: [
+            { link: { startsWith: "/admin" } },
+            { link: { startsWith: "/student" } },
+            { title: { contains: "Vehicle Registration Pending", mode: "insensitive" as const } },
+            { title: { contains: "New Vehicle Registration", mode: "insensitive" as const } },
+            { title: { contains: "New Incident Report", mode: "insensitive" as const } },
+            { title: { contains: "New Incident:", mode: "insensitive" as const } },
+            { title: { contains: "New Suspension Appeal", mode: "insensitive" as const } },
+            { title: { contains: "Gate Vehicle Claimed", mode: "insensitive" as const } },
+            { title: { contains: "Report Reviewed", mode: "insensitive" as const } },
+            { title: { contains: "Report Disapproved", mode: "insensitive" as const } },
+            { description: { contains: "Waiting for security/admin review", mode: "insensitive" as const } },
+            { description: { contains: "Awaiting document verification", mode: "insensitive" as const } },
+            { description: { contains: "Pending admin approval", mode: "insensitive" as const } },
+          ],
+        },
+        {
+          OR: [
+            { link: { startsWith: "/guard" } },
+            { title: { contains: "Parking", mode: "insensitive" as const } },
+            { title: { contains: "Pass Approved", mode: "insensitive" as const } },
+            { title: { contains: "Gate", mode: "insensitive" as const } },
+            { type: "warning" },
+          ],
+        },
+      ],
+    };
+  }
+
+  // ADMIN and SUPER_ADMIN: Admin tasks only (incident reports, vehicle registration reviews, appeals)
+  return {
+    AND: [
+      {
+        userId: null, // Admin tasks are broadcast to administrators, not individual student alerts
+      },
+      {
+        NOT: [
+          { link: { startsWith: "/guard" } },
+          { link: { startsWith: "/student" } },
+          { title: { contains: "Vehicle Pass Approved", mode: "insensitive" as const } },
+          { title: { contains: "Report Reviewed", mode: "insensitive" as const } },
+          { title: { contains: "Report Disapproved", mode: "insensitive" as const } },
+          { description: { contains: "Guard entries should be queued", mode: "insensitive" as const } },
+        ],
+      },
+      {
+        OR: [
+          { link: { startsWith: "/admin" } },
+          { title: { contains: "Incident", mode: "insensitive" as const } },
+          { title: { contains: "Registration", mode: "insensitive" as const } },
+          { title: { contains: "Appeal", mode: "insensitive" as const } },
+          { title: { contains: "Claimed", mode: "insensitive" as const } },
+          { title: { contains: "Gate", mode: "insensitive" as const } },
+          { type: "alert" },
+        ],
+      },
+    ],
+  };
+}
+
+/**
  * 1. GET /api/guard/notifications & /api/admin/notifications
  * Returns live notifications, unread count, and tabs filtering
  */
@@ -162,9 +234,13 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
     const limit = parseInt(req.query.limit as string, 10) || 20;
     const skip = (page - 1) * limit;
 
-    const isGuard = req.user?.role === "GUARD";
+    const userRole = req.user?.role || "ADMIN";
+    const isGuard = userRole === "GUARD";
+    const roleCriteria = getRoleNotificationCriteria(userRole);
 
-    const whereCondition: any = {};
+    const whereCondition: any = {
+      AND: [...roleCriteria.AND],
+    };
 
     if (tab === "unread") {
       whereCondition.read = false;
@@ -175,68 +251,22 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
     }
 
     if (search) {
-      whereCondition.OR = [
-        { title: { contains: search, mode: "insensitive" } },
-        { description: { contains: search, mode: "insensitive" } },
-      ];
+      whereCondition.AND.push({
+        OR: [
+          { title: { contains: search, mode: "insensitive" } },
+          { description: { contains: search, mode: "insensitive" } },
+        ],
+      });
     }
 
-    // Role-based notification isolation
-    if (isGuard) {
-      // Guards only receive operational gate, parking capacity, approved pass alerts, and security alerts.
-      // Filter out admin tasks (admin document verification, pending admin incident reviews, appeals, etc.)
-      whereCondition.AND = [
-        ...(whereCondition.AND || []),
-        {
-          NOT: [
-            { title: { contains: "Vehicle Registration Pending", mode: "insensitive" } },
-            { title: { contains: "New Vehicle Registration", mode: "insensitive" } },
-            { title: { contains: "New Incident Report", mode: "insensitive" } },
-            { title: { contains: "New Suspension Appeal", mode: "insensitive" } },
-            { description: { contains: "Waiting for security/admin review", mode: "insensitive" } },
-            { description: { contains: "Awaiting document verification", mode: "insensitive" } },
-          ],
-        },
-        {
-          OR: [
-            { link: { contains: "/guard" } },
-            { title: { contains: "Parking", mode: "insensitive" } },
-            { title: { contains: "Pass Approved", mode: "insensitive" } },
-            { title: { contains: "Gate", mode: "insensitive" } },
-            { type: "warning" },
-          ],
-        },
-      ];
-    }
-
-    const unreadWhere: any = { read: false };
-    if (isGuard) {
-      unreadWhere.AND = [
-        {
-          NOT: [
-            { title: { contains: "Vehicle Registration Pending", mode: "insensitive" } },
-            { title: { contains: "New Vehicle Registration", mode: "insensitive" } },
-            { title: { contains: "New Incident Report", mode: "insensitive" } },
-            { title: { contains: "New Suspension Appeal", mode: "insensitive" } },
-            { description: { contains: "Waiting for security/admin review", mode: "insensitive" } },
-            { description: { contains: "Awaiting document verification", mode: "insensitive" } },
-          ],
-        },
-        {
-          OR: [
-            { link: { contains: "/guard" } },
-            { title: { contains: "Parking", mode: "insensitive" } },
-            { title: { contains: "Pass Approved", mode: "insensitive" } },
-            { title: { contains: "Gate", mode: "insensitive" } },
-            { type: "warning" },
-          ],
-        },
-      ];
-    }
+    const unreadWhere: any = {
+      read: false,
+      AND: [...roleCriteria.AND],
+    };
 
     const [totalUnread, totalCount, notificationsList] = await Promise.all([
       db.notification.count({ where: unreadWhere }),
-      db.notification.count({ where: isGuard ? { AND: unreadWhere.AND } : {} }),
+      db.notification.count({ where: roleCriteria }),
       db.notification.findMany({
         where: whereCondition,
         orderBy: { createdAt: "desc" },
@@ -274,7 +304,7 @@ adminNotificationRoutes.get("/", async (req, res, next) => {
       pagination: {
         page,
         limit,
-        total: notificationsList.length,
+        total: totalCount,
       },
     });
   } catch (err) {
@@ -293,12 +323,28 @@ adminNotificationRoutes.patch("/:id/read", async (req, res, next) => {
       return res.status(400).json({ success: false, message: "Invalid notification ID" });
     }
 
+    const userRole = req.user?.role || "ADMIN";
+    const roleCriteria = getRoleNotificationCriteria(userRole);
+
+    // Verify notification belongs to the calling role before updating
+    const existing = await db.notification.findFirst({
+      where: { id, ...roleCriteria },
+    });
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found or access denied for your role",
+      });
+    }
+
     const updated = await db.notification.update({
       where: { id },
       data: { read: true },
     });
 
-    const unreadCount = await db.notification.count({ where: { read: false } });
+    const unreadCount = await db.notification.count({
+      where: { read: false, ...roleCriteria },
+    });
 
     return res.status(200).json({
       success: true,
@@ -313,18 +359,23 @@ adminNotificationRoutes.patch("/:id/read", async (req, res, next) => {
 
 /**
  * 3. PATCH /api/guard/notifications/mark-all-read & /api/admin/notifications/mark-all-read
- * Mark all notifications as read
+ * Mark all notifications for the caller's role as read
  */
 adminNotificationRoutes.patch("/mark-all-read", async (req, res, next) => {
   try {
+    const userRole = req.user?.role || "ADMIN";
+    const roleCriteria = getRoleNotificationCriteria(userRole);
+
     await db.notification.updateMany({
-      where: { read: false },
+      where: { read: false, ...roleCriteria },
       data: { read: true },
     });
 
     return res.status(200).json({
       success: true,
-      message: "All notifications marked as read",
+      message: userRole === "GUARD"
+        ? "Guard notifications marked as read"
+        : "Admin notifications marked as read",
       unreadCount: 0,
     });
   } catch (err) {
@@ -333,21 +384,43 @@ adminNotificationRoutes.patch("/mark-all-read", async (req, res, next) => {
 });
 
 /**
- * 4. DELETE /api/guard/notifications/:id & /api/admin/notifications/:id
- * Delete a notification
+ * 4. DELETE /api/admin/notifications/:id
+ * Delete a notification (Admin-only operation)
  */
 adminNotificationRoutes.delete("/:id", async (req, res, next) => {
   try {
+    const userRole = req.user?.role;
+    if (userRole === "GUARD") {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. Security Guards cannot delete notifications.",
+      });
+    }
+
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
       return res.status(400).json({ success: false, message: "Invalid notification ID" });
+    }
+
+    const roleCriteria = getRoleNotificationCriteria(userRole || "ADMIN");
+
+    const existing = await db.notification.findFirst({
+      where: { id, ...roleCriteria },
+    });
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found or access denied",
+      });
     }
 
     await db.notification.delete({
       where: { id },
     });
 
-    const unreadCount = await db.notification.count({ where: { read: false } });
+    const unreadCount = await db.notification.count({
+      where: { read: false, ...roleCriteria },
+    });
 
     return res.status(200).json({
       success: true,
